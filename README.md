@@ -1,26 +1,29 @@
-# SD to Immich: import camera SD cards into Immich on macOS
+# SD to Immich: import camera SD cards into Immich on Mac
 
-**SD to Immich** is a free, open-source Mac app that imports photos and videos from a camera SD card into your self-hosted [Immich](https://immich.app) server: **RAW-first, with no duplicates, sorted into albums by date.**
+**SD to Immich** is a free, open-source macOS app that imports photos and videos from a camera SD card into your self-hosted [Immich](https://immich.app) photo server. It uploads **RAW files first**, **never uploads duplicates**, and sorts everything into **albums by date**.
 
-Insert the card, click **Import to Immich**, done. The app uploads the RAW file of every shot (Sony ARW, Canon CR3/CR2, Nikon NEF, Fujifilm RAF, Olympus ORF, Panasonic RW2, Pentax PEF, DNG), skips the matching JPEG, skips anything that is already in your Immich library, and puts each photo and video into an album named after the day it was taken.
+Insert the card, click **Import to Immich**, done.
 
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)](#download)
 [![Immich](https://img.shields.io/badge/Immich-v3-4250af)](https://immich.app)
+[![Swift](https://img.shields.io/badge/Swift-native-F05138?logo=swift&logoColor=white)](#build-from-source)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+**Contents:** [Features](#features) · [Download](#download) · [Setup](#setup) · [Supported cameras](#supported-cameras) · [How cards are detected](#how-cards-are-detected) · [Multiple cards](#multiple-sd-cards-and-dual-slot-cameras) · [How it works](#how-it-works) · [Settings](#settings) · [FAQ](#faq)
 
 ---
 
 ## Features
 
-- **RAW + JPEG handled properly.** If you shoot RAW+JPEG, only the RAW is uploaded. A JPEG is uploaded only when a shot has no RAW. A JPEG whose RAW you imported on an earlier day is never uploaded later, even from a different card.
-- **No duplicates.** Every file is checked against your Immich library by SHA-1 checksum before upload, so re-inserting a card or importing an overlapping card uploads only what is new.
-- **Albums by capture date.** Photos and videos go into albums like `2026-10-02` (format configurable, e.g. `02 Oct 2026`), taken from the EXIF date. Existing albums are reused.
-- **Videos included.** MP4/MOV/MTS clips from `DCIM` and from Sony's `PRIVATE/M4ROOT/CLIP` folder (Sony Alpha, ZV-E10, ZV-1, FX30, A7 series, …).
-- **See every file.** Thumbnails of all photos and videos on the card (RAW previews included), each with a status mark: ✓ in Immich, uploading, new, or skipped.
-- **Fast.** Works in batches of 20: uploads start within seconds instead of after reading the whole card. Checksums are cached, so re-checking a card you already scanned takes about a second.
-- **Native Swift app, no dependencies.** Detects a camera card as soon as you insert it, live progress, a notification when done, and an Eject button. Nothing else to install.
-- **Large videos that actually upload.** Immich drops uploads that take more than ~5 minutes. On a slow link (VPN, Tailscale relay, Wi-Fi), big files can go through an optional SSH relay near your server: copied with `rsync` (resumable) and uploaded from there.
-- **Safe settings.** Your Immich API key lives in the macOS Keychain, never in a file. Nothing is deleted from the card.
+- **RAW + JPEG done right.** Shoot RAW+JPEG and only the RAW (ARW, CR3, NEF, RAF, DNG, …) is uploaded. A JPEG is uploaded only when a shot has no RAW, and never once its RAW has been imported, even from a later card.
+- **No duplicates.** Every file is checked against your Immich library by checksum, so re-inserting a card or importing an overlapping card uploads only what is new.
+- **Albums by date.** Photos and videos go into albums named after the day they were taken (`2026-10-02`, or any format you like, e.g. `02 Oct 2026`). Existing albums are reused.
+- **Photos and videos.** Video clips are imported too, including Sony's separate video folder.
+- **See every file.** Thumbnails of every photo and video on the card (RAW previews included), each with a status mark: ✓ in Immich, uploading, new, or skipped.
+- **Fast.** Works in batches of 20, so uploads start within seconds. Checksums are cached: re-checking a card takes about a second.
+- **Native Mac app, nothing else to install.** Written in Swift. Detects a card the moment you insert it, shows live progress, notifies you when done, and ejects the card.
+- **Big videos that actually upload.** Optional SSH relay for multi-GB clips on slow connections (see [FAQ](#faq)).
+- **Private and safe.** Talks only to your Immich server. The API key is kept in the macOS Keychain. Files on the card are only read, never changed or deleted.
 
 ## Download
 
@@ -28,7 +31,7 @@ Insert the card, click **Import to Immich**, done. The app uploads the RAW file 
 2. Move **SD to Immich.app** to your Applications folder.
 3. The app is open source but not notarized by Apple, so macOS blocks the first launch. Open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. (Or run `xattr -dr com.apple.quarantine "/Applications/SD to Immich.app"`.)
 
-Requirements: macOS 13 Ventura or newer, Apple Silicon or Intel. No other software needed.
+Requirements: macOS 13 Ventura or newer, Apple Silicon or Intel, and an Immich server (tested with Immich v3.2).
 
 ## Setup
 
@@ -37,19 +40,49 @@ Requirements: macOS 13 Ventura or newer, Apple Silicon or Intel. No other softwa
 2. Open **SD to Immich → Settings**, enter your Immich address (e.g. `https://photos.example.com`) and paste the key.
 3. Click **Test connection**, then **Save**.
 
-Now insert a camera card. It appears in the sidebar. Click **Check what's new** for a dry run, or **Import to Immich**.
+Insert a camera card. It appears in the window with its thumbnails. Click **Check what's new** for a dry run, or **Import to Immich**. The first time, allow macOS to let the app read the card.
+
+## Supported cameras
+
+Any camera that saves to a standard `DCIM` folder, which is practically every digital camera.
+
+| Brand | RAW formats | Videos |
+|---|---|---|
+| Sony (Alpha, ZV-E10, ZV-1, FX30, A7 series) | ARW, SR2 | MP4 in `PRIVATE/M4ROOT/CLIP`, AVCHD |
+| Canon (EOS R, EOS, PowerShot) | CR3, CR2 | MP4, MOV |
+| Nikon (Z, D series) | NEF, NRW | MP4, MOV |
+| Fujifilm (X, GFX series) | RAF | MOV, MP4 (HEIF `.HIF` photos too) |
+| Panasonic Lumix, OM System / Olympus | RW2, ORF | MP4, MOV, AVCHD |
+| Pentax, Leica, Ricoh, DJI drones | DNG, PEF | MP4, MOV |
+| GoPro and action cameras | n/a | MP4 (low-res `.LRV` / `.THM` proxies are ignored) |
+
+Tested with a Sony ZV-E10 II. RAW and JPEG are paired by file name (`DSC01234.ARW` + `DSC01234.JPG`), which is how all of these cameras name them. Cinema formats such as Canon `.CRM` and `.MXF` are not imported.
+
+## How cards are detected
+
+The app looks at **what is on a volume**, not at the hardware:
+
+- Every mounted volume in `/Volumes` with a **`DCIM` folder** at the top is treated as a camera card. `DCIM` is the folder every camera creates (DCF standard).
+- Anything without `DCIM` (external drives, pen drives with normal files, network shares) is ignored. Your Mac's internal disk is never touched.
+
+So a card works in the Mac's SD slot, in any USB card reader, or with the camera plugged in by USB in mass-storage mode. A drive onto which you copied a whole card (with its `DCIM` folder) is also picked up, which is handy for importing old backups.
+
+## Multiple SD cards and dual-slot cameras
+
+- Every inserted card is listed; select one and import it, then the next. Files that are on more than one card are uploaded once.
+- **Dual-slot cameras** writing RAW to one card and JPEG to the other: **import the RAW card first.** The app remembers those shots, so the JPEGs on the second card are skipped automatically.
 
 ## How it works
 
 | Step | What happens |
 |---|---|
-| Find the card | Any mounted volume with a `DCIM` folder is treated as a camera card. |
-| Pick files | Group files by shot (`DSC01234.ARW` + `DSC01234.JPG`). Keep the RAW; keep the JPEG only if there is no RAW. Add videos. |
-| Deduplicate | In batches of 20: SHA-1 each file (cached) and ask Immich (`/assets/bulk-upload-check`) which ones it already has. |
-| Upload | Upload only the new files of the batch, with their capture date. |
-| Albums | Add the batch (new or already uploaded) to its date albums, creating them if needed. A cancelled import keeps everything finished so far. |
+| Find cards | Volumes with a `DCIM` folder (see above). |
+| Pick files | Group files by shot. Keep the RAW; keep the JPEG only if there is no RAW. Add videos. |
+| Check | In batches of 20: checksum each file (SHA-1, cached) and ask Immich (`/assets/bulk-upload-check`) which ones it already has. |
+| Upload | Upload only the new files, with their capture date from EXIF. |
+| Albums | Add each batch to its date albums, creating them if needed. A cancelled import keeps everything finished so far. |
 
-The RAW ledger (`~/Library/Application Support/sd2immich/raw-shots.json`) remembers which RAW shots were imported, so their JPEG twins are skipped on later imports even if the RAW was deleted from the card.
+Imported RAW shots are remembered in `~/Library/Application Support/sd2immich/raw-shots.json`, so their JPEG twins stay skipped on later imports. Each card scan is logged to `~/Library/Logs/SD to Immich.log`.
 
 ## Settings
 
@@ -59,7 +92,7 @@ The RAW ledger (`~/Library/Application Support/sd2immich/raw-shots.json`) rememb
 | API key | | Stored in the login Keychain (service `sd-card-to-immich`) |
 | Import videos | on | Include video clips |
 | RAW only | off | Also skip JPEGs that have no RAW |
-| Album name format | `%Y-%m-%d` | strftime format of the capture date |
+| Album name format | `%Y-%m-%d` | strftime format of the capture date, e.g. `%d %b %Y` |
 | Relay SSH host | empty | Optional `user@host` near Immich for big files |
 | Relay threshold | 300 MB | Files above this go through the relay |
 
@@ -67,29 +100,29 @@ Settings other than the key are stored in `~/.config/sd2immich/config.json` (rea
 
 ## FAQ
 
+**How do I upload photos from an SD card to Immich on a Mac?**
+Install SD to Immich, add your server URL and an API key in Settings, insert the card and click **Import to Immich**. No command line needed.
+
 **Does it delete or change anything on the SD card?**
-No. It only reads. Format the card in your camera when you are ready.
+No. It only reads. Format the card in your camera when you're ready.
 
 **Why is the JPEG skipped when I shoot RAW+JPEG?**
-Immich shows RAW files with previews, and keeping both doubles the library with near-identical images. Turn on "RAW only" to skip JPEG-only shots as well.
+Immich shows RAW files with previews, so keeping both would double your library with near-identical images. Turn on "RAW only" to skip JPEG-only shots as well.
 
-**What happens if I import the same card twice?**
-Nothing is uploaded twice. Items already in Immich are skipped and just added to their album if they are missing from it.
+**What if I import the same card twice?**
+Nothing is uploaded twice. Items already in Immich are skipped and just added to their album if missing.
 
-**Big videos fail with "broken pipe" / the upload stops at ~5 minutes.**
-That is Immich's request timeout on a slow connection. Use a faster network to the server, or set a relay SSH host in Settings.
+**My SD card doesn't show up.**
+Allow the app to read removable volumes: accept the macOS prompt, or enable it in **System Settings → Privacy & Security → Files and Folders → SD to Immich → Removable Volumes**, then click **Rescan**. The card also needs a `DCIM` folder. `~/Library/Logs/SD to Immich.log` shows which volumes were seen and why.
 
-**Which cameras are supported?**
-Any camera that writes a standard `DCIM` folder. Sony's separate video folder is supported. Tested with a Sony ZV-E10 II and Immich v3.2.
-
-**My SD card does not show up.**
-The app needs permission to read removable volumes: allow the macOS prompt, or turn it on in **System Settings → Privacy & Security → Files and Folders → SD to Immich → Removable Volumes**, then click Rescan. Each scan is logged to `~/Library/Logs/SD to Immich.log` (which volumes were seen and why a card was or wasn't picked up).
+**Big videos fail with "broken pipe" or stop after ~5 minutes.**
+Immich drops uploads that take longer than about 5 minutes, which happens with multi-GB clips over a slow link (VPN, Wi-Fi, Tailscale relay). Use a faster connection, or set a **relay SSH host** in Settings: files over the threshold are copied there with `rsync` (resumable) and uploaded from next to the server.
 
 **Why does macOS ask to let SD to Immich use the Keychain?**
-The API key is stored encrypted in your Keychain. Because the app isn't signed with an Apple developer ID, macOS asks once after you install or update it whether the new version may read the key. The app explains this before the prompt appears; click **Always Allow**.
+The API key is stored encrypted in your Keychain. The app isn't signed with an Apple developer ID, so macOS asks once after each install or update whether the new version may read it. The app explains this first; click **Always Allow**.
 
 **Is this an official Immich app?**
-No. It is an independent project that uses Immich's public API.
+No. It is an independent open-source project that uses Immich's public API. An alternative to the Immich CLI and to uploading through the web page, built for camera cards.
 
 ## Build from source
 
