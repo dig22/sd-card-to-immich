@@ -1,0 +1,9 @@
+{
+  "server": "https://photos.example.com",
+  "album_format": "%Y-%m-%d",
+  "videos": true,
+  "raw_only": false,
+  "relay_host": "",
+  "relay_dir": ".cache/sd2immich",
+  "relay_min_mb": 300
+}
