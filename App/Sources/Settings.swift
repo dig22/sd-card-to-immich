@@ -11,9 +11,13 @@ struct AppSettings: Codable, Equatable {
     var relayHost: String = ""
     var relayDir: String = ".cache/sd2immich"
     var relayMinMB: Int = 300
+    var autoImport: Bool = false
+    var ejectWhenDone: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case server, videos
+        case autoImport = "auto_import"
+        case ejectWhenDone = "eject_when_done"
         case albumFormat = "album_format"
         case rawOnly = "raw_only"
         case relayHost = "relay_host"
@@ -36,6 +40,8 @@ struct AppSettings: Codable, Equatable {
         relayHost = try c.decodeIfPresent(String.self, forKey: .relayHost) ?? d.relayHost
         relayDir = try c.decodeIfPresent(String.self, forKey: .relayDir) ?? d.relayDir
         relayMinMB = try c.decodeIfPresent(Int.self, forKey: .relayMinMB) ?? d.relayMinMB
+        autoImport = try c.decodeIfPresent(Bool.self, forKey: .autoImport) ?? d.autoImport
+        ejectWhenDone = try c.decodeIfPresent(Bool.self, forKey: .ejectWhenDone) ?? d.ejectWhenDone
     }
 
     static func load() -> AppSettings {
@@ -120,20 +126,29 @@ enum Keychain {
     }
 }
 
-/// strftime ("%Y-%m-%d") -> DateFormatter pattern ("yyyy-MM-dd"); literal text is quoted.
+/// strftime ("%Y-%m-%d") -> DateFormatter pattern ("yyyy-MM-dd"). Literal text is quoted
+/// as whole runs ("Trip %Y" -> "'Trip 'yyyy"), since DateFormatter treats letters as fields.
 func strftimeToDateFormat(_ s: String) -> String {
     let map: [Character: String] = ["Y": "yyyy", "y": "yy", "m": "MM", "d": "dd", "e": "d", "b": "MMM", "B": "MMMM",
-                                    "a": "EEE", "A": "EEEE", "H": "HH", "M": "mm", "j": "DDD"]
+                                    "a": "EEE", "A": "EEEE", "H": "HH", "M": "mm", "j": "DDD", "%": "%"]
     var out = ""
+    var literal = ""
+    func flush() {
+        guard !literal.isEmpty else { return }
+        out += "'" + literal.replacingOccurrences(of: "'", with: "''") + "'"
+        literal = ""
+    }
     var i = s.startIndex
     while i < s.endIndex {
-        if s[i] == "%", s.index(after: i) < s.endIndex {
-            out += map[s[s.index(after: i)]] ?? ""
+        if s[i] == "%", s.index(after: i) < s.endIndex, let field = map[s[s.index(after: i)]] {
+            flush()
+            out += field == "%" ? "'%'" : field
             i = s.index(i, offsetBy: 2)
         } else {
-            out += s[i].isLetter ? "'\(s[i])'" : (s[i] == "'" ? "''" : String(s[i]))
+            literal.append(s[i])
             i = s.index(after: i)
         }
     }
+    flush()
     return out
 }

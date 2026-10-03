@@ -35,6 +35,10 @@ struct CardInfo: Identifiable, Hashable {
     let path: String
     let name: String
     let files: [MediaFile]
+    /// On the card but left out by the settings (JPEG-only shots with "RAW only", videos
+    /// with "Import videos" off). JPEG twins of RAWs are not counted: the RAW is the backup.
+    var excludedJPG = 0
+    var excludedVideos = 0
     var id: String { path }
     var raw: Int { files.filter { $0.kind == .raw }.count }
     var jpg: Int { files.filter { $0.kind == .jpg }.count }
@@ -67,8 +71,9 @@ enum CardScanner {
                 continue
             }
             guard top.contains("DCIM") else { continue }
-            let files = pickFiles(volume: vol, videos: videos, rawOnly: rawOnly)
-            let card = CardInfo(path: vol.path, name: name, files: files)
+            let picked = pickFiles(volume: vol, videos: videos, rawOnly: rawOnly)
+            let card = CardInfo(path: vol.path, name: name, files: picked.files,
+                                excludedJPG: picked.excludedJPG, excludedVideos: picked.excludedVideos)
             Log.write("  \(vol.path): card raw=\(card.raw) jpg=\(card.jpg) videos=\(card.videos)")
             out.append(.card(card))
         }
@@ -76,7 +81,8 @@ enum CardScanner {
     }
 
     /// RAW for every shot; a JPEG only when its shot has no RAW (unless rawOnly); videos.
-    static func pickFiles(volume: URL, videos: Bool, rawOnly: Bool) -> [MediaFile] {
+    static func pickFiles(volume: URL, videos: Bool, rawOnly: Bool)
+        -> (files: [MediaFile], excludedJPG: Int, excludedVideos: Int) {
         var shots: [String: [MediaFile]] = [:]
         var clips: [MediaFile] = []
         for f in regularFiles(under: volume.appendingPathComponent("DCIM")) {
@@ -86,17 +92,16 @@ enum CardScanner {
             }
         }
         var chosen: [MediaFile] = []
+        var excludedJPG = 0
         for group in shots.values {
             let raws = group.filter { $0.kind == .raw }
-            if !raws.isEmpty { chosen += raws } else if !rawOnly { chosen += group }
+            if !raws.isEmpty { chosen += raws } else if !rawOnly { chosen += group } else { excludedJPG += group.count }
         }
-        if videos {
-            for d in FileRules.videoDirs {
-                clips += regularFiles(under: volume.appendingPathComponent(d)).filter { $0.kind == .video }
-            }
-            chosen += clips
+        for d in FileRules.videoDirs {
+            clips += regularFiles(under: volume.appendingPathComponent(d)).filter { $0.kind == .video }
         }
-        return chosen.sorted { $0.url.path < $1.url.path }
+        if videos { chosen += clips }
+        return (chosen.sorted { $0.url.path < $1.url.path }, excludedJPG, videos ? 0 : clips.count)
     }
 
     private static func regularFiles(under dir: URL) -> [MediaFile] {
@@ -405,6 +410,8 @@ struct ImportEvents {
     var log: (String) -> Void
     var phase: (String, Double) -> Void  // detail text, overall fraction 0...1
     var status: (URL, FileStatus) -> Void = { _, _ in }
+    /// Bytes processed so far (checked, skipped or uploaded) and the card total: drives speed / time left.
+    var bytes: (Int64, Int64) -> Void = { _, _ in }
 }
 
 /// SHA-1 per file, cached by name + size + modification time, so a card that was
@@ -447,8 +454,27 @@ enum Importer {
     /// Works in batches: fingerprint 20 files -> ask Immich which are new -> upload them ->
     /// add the batch to its day albums. Uploads start within seconds, and a cancelled run
     /// keeps everything finished so far (albums included). Returns a one-line summary.
+    struct Outcome {
+        let message: String
+        /// Final state of every file the run looked at (exact, unlike the async UI updates).
+        let statuses: [URL: FileStatus]
+    }
+
     static func run(card: CardInfo, settings: AppSettings, key: String, dryRun: Bool,
-                    events: ImportEvents) async throws -> String {
+                    events: ImportEvents) async throws -> Outcome {
+        final class Box { var statuses: [URL: FileStatus] = [:] }
+        let box = Box()
+        let report: (URL, FileStatus) -> Void = { url, st in
+            box.statuses[url] = st
+            events.status(url, st)
+        }
+        let message = try await work(card: card, settings: settings, key: key, dryRun: dryRun,
+                                     events: events, report: report)
+        return Outcome(message: message, statuses: box.statuses)
+    }
+
+    private static func work(card: CardInfo, settings: AppSettings, key: String, dryRun: Bool,
+                             events: ImportEvents, report: @escaping (URL, FileStatus) -> Void) async throws -> String {
         let files = card.files
         guard !files.isEmpty else { return "No photos or videos on \(card.name)." }
         events.log("\(card.name): \(card.raw) RAW, \(card.jpg) JPG, \(card.videos) videos")
@@ -480,7 +506,7 @@ enum Importer {
                 let taken = CaptureDate.of(f)
                 events.phase("Checking \(f.url.lastPathComponent)…", 0.02 + 0.95 * Double(doneBytes) / Double(totalBytes))
                 if f.kind == .jpg && ledger.contains(Ledger.key(f, taken)) {
-                    events.status(f.url, .skipped("RAW already imported"))
+                    report(f.url, .skipped("RAW already imported"))
                     skippedJPG += 1
                     doneBytes += f.size
                     continue
@@ -490,7 +516,7 @@ enum Importer {
             HashCache.save()
             let fresh = items.filter { seen.insert($0.hash).inserted }
             for i in items where !fresh.contains(where: { $0.file == i.file }) {
-                events.status(i.file.url, .skipped("duplicate on card"))
+                report(i.file.url, .skipped("duplicate on card"))
             }
             cardDupes += items.count - fresh.count
             if fresh.isEmpty { continue }
@@ -507,7 +533,7 @@ enum Importer {
             }
             existing += assetOf.count
             for i in fresh {
-                events.status(i.file.url, accept.contains(i.hash) ? (dryRun ? .new : .pending) : .inImmich)
+                report(i.file.url, accept.contains(i.hash) ? (dryRun ? .new : .pending) : .inImmich)
             }
 
             if dryRun {
@@ -519,6 +545,7 @@ enum Importer {
                 }
                 events.phase("Checked \(min(start + batchSize, files.count)) of \(files.count)…",
                              0.02 + 0.95 * Double(doneBytes) / Double(totalBytes))
+                events.bytes(doneBytes, totalBytes)
                 continue
             }
 
@@ -530,20 +557,21 @@ enum Importer {
                     let label = "Uploading \(f.url.lastPathComponent)"
                     let sent = doneBytes
                     let useRelay = !settings.relayHost.isEmpty && f.size > Int64(settings.relayMinMB) * 1_048_576
-                    events.status(f.url, .uploading(0))
+                    report(f.url, .uploading(0))
                     let r: (id: String, status: String)
                     do {
                         r = useRelay
                             ? try await Relay.upload(f, created: i.taken, settings: settings, client: client, log: events.log)
                             : try await client.upload(f, created: i.taken) { p in
-                                events.status(f.url, .uploading(p))
+                                report(f.url, .uploading(p))
                                 events.phase(label, 0.02 + 0.95 * (Double(sent) + p * Double(f.size)) / Double(totalBytes))
+                                events.bytes(sent + Int64(p * Double(f.size)), totalBytes)
                             }
                     } catch {
-                        events.status(f.url, error is CancellationError ? .pending : .failed)
+                        report(f.url, error is CancellationError ? .pending : .failed)
                         throw error
                     }
-                    events.status(f.url, .inImmich)
+                    report(f.url, .inImmich)
                     assetOf[i.hash] = r.id
                     uploaded += 1
                     events.log("↑ \(f.url.lastPathComponent) \(r.status)")
@@ -551,6 +579,7 @@ enum Importer {
                 if i.file.kind == .raw { ledger.insert(Ledger.key(i.file, i.taken)) }
                 doneBytes += i.file.size
                 events.phase("Uploaded \(uploaded), \(existing) already in Immich", 0.02 + 0.95 * Double(doneBytes) / Double(totalBytes))
+                events.bytes(doneBytes, totalBytes)
             }
             Ledger.save(ledger)
 

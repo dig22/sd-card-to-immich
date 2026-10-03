@@ -20,12 +20,24 @@ final class AppModel: ObservableObject {
     @Published var detail = ""
     @Published var log: [String] = []
     @Published var statuses: [URL: FileStatus] = [:]
+    /// "1.2 GB left · ~4 min · 6.3 MB/s" while an import runs.
+    @Published var transferInfo = ""
+    /// After an import or check: whether the card can be formatted (everything is in Immich).
+    @Published var safeToFormat: Verdict?
     @Published var showLog = false
     @Published var showSettings = false
     /// Shown before the first Keychain read of an app version (macOS will ask once).
     @Published var keychainNotice: (() -> Void)?
 
+    struct Verdict: Equatable {
+        let safe: Bool
+        let message: String
+    }
+
+    /// The API key after the first Keychain read of this launch: macOS is asked at most once.
+    var cachedKey: String?
     private var task: Task<Void, Never>?
+    private var samples: [(time: Date, bytes: Int64)] = []
     private var observers: [NSObjectProtocol] = []
     private static let noticeKey = "keychainNoticeShownForVersion"
     private var appVersion: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?" }
@@ -63,15 +75,21 @@ final class AppModel: ObservableObject {
         if bringToFront, let new = cards.first(where: { !before.contains($0.id) }) {
             selected = new.id
             NSApp.activate(ignoringOtherApps: true)
+            if settings.autoImport && isConfigured && !isRunning && !new.files.isEmpty {
+                Log.write("auto-import: \(new.name)")
+                start(dryRun: false)
+            }
         }
     }
 
     /// Reads the API key, first explaining the one-time macOS prompt after an app update.
     func withKey(_ body: @escaping (String) -> Void) {
+        if let k = cachedKey { return body(k) }
         let read = { [weak self] in
             guard let self else { return }
             UserDefaults.standard.set(self.appVersion, forKey: Self.noticeKey)
             if let k = Keychain.read() {
+                self.cachedKey = k
                 body(k)
             } else {
                 self.hasKey = Keychain.exists()
@@ -94,25 +112,43 @@ final class AppModel: ObservableObject {
         log = []
         statuses = [:]
         fraction = 0
+        samples = []
+        transferInfo = ""
+        safeToFormat = nil
         detail = "Reading \(card.name)…"
         phase = .running
         let settings = self.settings
         let events = ImportEvents(
             log: { line in Task { @MainActor in self.append(line) } },
             phase: { text, f in Task { @MainActor in self.detail = text; self.fraction = f } },
-            status: { url, st in Task { @MainActor in self.statuses[url] = st } })
+            status: { url, st in Task { @MainActor in self.statuses[url] = st } },
+            bytes: { done, total in Task { @MainActor in self.updateTransfer(done: done, total: total) } })
         task = Task {
             do {
-                let msg = try await Importer.run(card: card, settings: settings, key: key, dryRun: dryRun, events: events)
+                let outcome = try await Importer.run(card: card, settings: settings, key: key, dryRun: dryRun, events: events)
+                let msg = outcome.message
+                statuses.merge(outcome.statuses) { _, exact in exact }
                 fraction = 1
+                transferInfo = ""
                 phase = .finished(msg)
                 append(msg)
-                if !dryRun { notify("Import finished", msg) }
+                let verdict = Self.verdict(card: card, statuses: statuses)
+                safeToFormat = verdict
+                Log.write("\(dryRun ? "check" : "import") \(card.name): \(msg) | \(verdict.message)")
+                if !dryRun {
+                    notify("Import finished", verdict.safe ? "\(msg) \(verdict.message)" : msg)
+                    if settings.ejectWhenDone && !statuses.values.contains(.failed) {
+                        eject(card)
+                        append("Ejected \(card.name).")
+                        Log.write("ejected \(card.name)")
+                    }
+                }
             } catch is CancellationError {
                 phase = .failed("Cancelled.")
             } catch {
                 phase = .failed(error.localizedDescription)
                 append("Error: \(error.localizedDescription)")
+                Log.write("import \(card.name) failed: \(error.localizedDescription)")
                 if !dryRun { notify("Import failed", error.localizedDescription) }
             }
             task = nil
@@ -120,6 +156,54 @@ final class AppModel: ObservableObject {
     }
 
     func cancel() { task?.cancel() }
+
+    /// The card is safe to format when every file the import covers is confirmed in Immich
+    /// (or deliberately skipped: a JPEG whose RAW is in Immich, a duplicate on the card), and
+    /// the settings didn't leave anything out.
+    nonisolated static func verdict(card: CardInfo, statuses: [URL: FileStatus]) -> Verdict {
+        let notBackedUp = card.files.filter { f in
+            switch statuses[f.url] ?? .pending {
+            case .inImmich, .skipped: return false
+            default: return true
+            }
+        }.count
+        var excluded: [String] = []
+        if card.excludedVideos > 0 { excluded.append("\(card.excludedVideos) video\(card.excludedVideos == 1 ? "" : "s") (Import videos is off)") }
+        if card.excludedJPG > 0 { excluded.append("\(card.excludedJPG) JPEG-only photo\(card.excludedJPG == 1 ? "" : "s") (RAW only is on)") }
+        if notBackedUp > 0 {
+            return Verdict(safe: false, message: "\(notBackedUp) item\(notBackedUp == 1 ? " is" : "s are") not in Immich yet. Don't format \(card.name).")
+        }
+        if !excluded.isEmpty {
+            return Verdict(safe: false, message: "Everything imported is in Immich, but \(excluded.joined(separator: " and ")) on \(card.name) were not imported. Don't format it yet.")
+        }
+        let what = card.files.count == 1 ? "The only item" : "All \(card.files.count) items"
+        let verb = card.files.count == 1 ? "is" : "are"
+        return Verdict(safe: true, message: "\(what) on \(card.name) \(verb) in Immich. It's safe to format the card in your camera.")
+    }
+
+    private func updateTransfer(done: Int64, total: Int64) {
+        let now = Date()
+        samples.append((now, done))
+        samples.removeAll { now.timeIntervalSince($0.time) > 15 }
+        transferInfo = Self.transferText(done: done, total: total, samples: samples, now: now)
+    }
+
+    /// "1.2 GB left · ~4 min · 6.3 MB/s" from the bytes processed in the last 15 s.
+    nonisolated static func transferText(done: Int64, total: Int64, samples: [(time: Date, bytes: Int64)], now: Date) -> String {
+        let left = max(0, total - done)
+        var parts = ["\(ByteCountFormatter.string(fromByteCount: left, countStyle: .file)) left"]
+        if let first = samples.first, now.timeIntervalSince(first.time) >= 2 {
+            let rate = Double(done - first.bytes) / now.timeIntervalSince(first.time)
+            if rate > 0 {
+                let secs = Double(left) / rate
+                let eta = secs < 60 ? "less than a minute" : secs < 3600 ? "~\(Int((secs / 60).rounded())) min"
+                    : String(format: "~%dh %02dm", Int(secs) / 3600, (Int(secs) % 3600) / 60)
+                parts.append(eta)
+                parts.append("\(ByteCountFormatter.string(fromByteCount: Int64(rate), countStyle: .file))/s")
+            }
+        }
+        return parts.joined(separator: " · ")
+    }
 
     private func append(_ line: String) {
         log.append(line)

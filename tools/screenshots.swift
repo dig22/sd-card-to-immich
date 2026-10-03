@@ -197,6 +197,7 @@ enum Shots {
             m.phase = .running
             m.fraction = 0.05 + 0.9 * Double(done) / Double(newFiles.count)
             m.detail = "Uploading \(newFiles[done].url.lastPathComponent)"
+            m.transferInfo = ["1.1 GB left · ~3 min · 7.4 MB/s", "640 MB left · ~1 min · 7.6 MB/s", "120 MB left · less than a minute · 7.5 MB/s"][step]
             let img = shot(step == 1 ? 1.2 : 0.9)
             if step == 1 { hero = img }
         }
@@ -204,6 +205,8 @@ enum Shots {
         for f in card.files { m.statuses[f.url] = .inImmich }
         m.phase = .finished("Imported 15 new, 6 already in Immich. Albums: 2026-10-02.")
         m.fraction = 1
+        m.transferInfo = ""
+        m.safeToFormat = AppModel.verdict(card: card, statuses: m.statuses)
         let done = shot(2.4)
 
         writePNG(hero!, "screenshot-importing.png")
@@ -213,8 +216,10 @@ enum Shots {
         // Settings sheet
         var s = AppSettings()
         s.server = "https://photos.example.com"
+        s.autoImport = true
+        s.ejectWhenDone = true
         let sm = model(card: card)
-        let settings = framed(render(SettingsView(draft: s).environmentObject(sm), size: CGSize(width: 560, height: 600)),
+        let settings = framed(render(SettingsView(draft: s).environmentObject(sm), size: CGSize(width: 560, height: 680)),
                               title: "Settings")
         writePNG(settings, "screenshot-settings.png")
     }

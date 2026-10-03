@@ -2,7 +2,7 @@
 
 **SD to Immich** is a free, open-source macOS app that imports photos and videos from a camera SD card into your self-hosted [Immich](https://immich.app) photo server. It uploads **RAW files first**, **never uploads duplicates**, and sorts everything into **albums by date**.
 
-Insert the card, click **Import to Immich**, done.
+Insert the card, click **Import to Immich**, done. Or turn on auto-import and just insert the card: it imports, tells you when the card is safe to format, and ejects it.
 
 <p align="center">
   <img src="docs/demo.gif" alt="SD to Immich importing RAW photos and videos from a Sony SD card into Immich: thumbnails get a green tick as each file is uploaded" width="820">
@@ -24,7 +24,9 @@ Insert the card, click **Import to Immich**, done.
 - **Albums by date.** Photos and videos go into albums named after the day they were taken (`2026-10-02`, or any format you like, e.g. `02 Oct 2026`). Existing albums are reused.
 - **Photos and videos.** Video clips are imported too, including Sony's separate video folder.
 - **See every file.** Thumbnails of every photo and video on the card (RAW previews included), each with a status mark: ✓ in Immich, uploading, new, or skipped.
-- **Fast.** Works in batches of 20, so uploads start within seconds. Checksums are cached: re-checking a card takes about a second.
+- **Hands-free.** Optionally import automatically when a card is inserted, eject it when done, and open at login.
+- **Safe to format?** After an import the app tells you whether every photo and video on the card is confirmed in Immich, or what is missing.
+- **Fast, with an ETA.** Works in batches of 20, so uploads start within seconds, and shows time left and speed. Checksums are cached: re-checking a card takes about a second.
 - **Native Mac app, nothing else to install.** Written in Swift. Detects a card the moment you insert it, shows live progress, notifies you when done, and ejects the card.
 - **Big videos that actually upload.** Optional SSH relay for multi-GB clips on slow connections (see [FAQ](#faq)).
 - **Private and safe.** Talks only to your Immich server. The API key is kept in the macOS Keychain. Files on the card are only read, never changed or deleted.
@@ -105,6 +107,9 @@ Imported RAW shots are remembered in `~/Library/Application Support/sd2immich/ra
 | Import videos | on | Include video clips |
 | RAW only | off | Also skip JPEGs that have no RAW |
 | Album name format | `%Y-%m-%d` | strftime format of the capture date, e.g. `%d %b %Y` |
+| Import automatically | off | Start importing as soon as a card is inserted |
+| Eject when done | off | Eject the card after a successful import |
+| Open at login | off | Start SD to Immich when you log in (macOS Login Items) |
 | Relay SSH host | empty | Optional `user@host` near Immich for big files |
 | Relay threshold | 300 MB | Files above this go through the relay |
 
@@ -116,7 +121,7 @@ Settings other than the key are stored in `~/.config/sd2immich/config.json` (rea
 Install SD to Immich, add your server URL and an API key in Settings, insert the card and click **Import to Immich**. No command line needed.
 
 **Does it delete or change anything on the SD card?**
-No. It only reads. Format the card in your camera when you're ready.
+No. It only reads. When an import finishes it tells you whether the card is safe to format: everything on it is confirmed in Immich, nothing was left out by your settings. Then format it in your camera.
 
 **Why is the JPEG skipped when I shoot RAW+JPEG?**
 Immich shows RAW files with previews, so keeping both would double your library with near-identical images. Turn on "RAW only" to skip JPEG-only shots as well.
@@ -141,9 +146,11 @@ No. It is an independent open-source project that uses Immich's public API. An a
 ```sh
 git clone https://github.com/dig22/sd-card-to-immich.git
 cd sd-card-to-immich
-./build.sh 2.0.1      # needs Xcode or the Command Line Tools
+./build.sh 2.1.0      # needs Xcode or the Command Line Tools
 open "build/SD to Immich.app"
 ```
+
+Run the tests with `Tests/run.sh` (unit tests on a generated fake camera card). Add `IMMICH_URL`, `IMMICH_API_KEY` and optionally `IMMICH_DUPLICATE_FILE` (a photo already in Immich) to also run integration checks against a real server; nothing is stored.
 
 `tools/make-screenshots.sh` regenerates the screenshots and GIF in `docs/` from the app's real views with demo data.
 

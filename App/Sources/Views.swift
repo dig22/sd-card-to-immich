@@ -1,3 +1,4 @@
+import ServiceManagement
 import SwiftUI
 
 /// Single pane: connection status, the cards, actions, progress. No collapsible sidebar,
@@ -133,12 +134,21 @@ struct ProgressPanel: View {
             case .idle:
                 EmptyView()
             case .running:
-                ProgressView(value: model.fraction) { Text(model.detail).lineLimit(1) }
-                    .tint(.accentColor)  // stays blue when the window is in the background
+                ProgressView(value: model.fraction) { Text(model.detail).lineLimit(1) } currentValueLabel: {
+                    if !model.transferInfo.isEmpty { Text(model.transferInfo).monospacedDigit() }
+                }
+                .tint(.accentColor)  // stays blue when the window is in the background
             case .finished(let msg):
                 Label(msg, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
             case .failed(let msg):
                 Label(msg, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).textSelection(.enabled)
+            }
+            if let v = model.safeToFormat, !model.isRunning {
+                Label(v.message, systemImage: v.safe ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                    .foregroundStyle(v.safe ? Color.green : Color.orange)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background((v.safe ? Color.green : Color.orange).opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             }
             if !model.log.isEmpty {
                 DisclosureGroup("Details", isExpanded: $model.showLog) {
@@ -212,6 +222,8 @@ struct SettingsView: View {
     @State private var testResult: String?
     @State private var testOK = false
     @State private var testing = false
+    @State private var openAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var loginNote: String?
 
     init(draft: AppSettings = AppSettings.load()) {
         _draft = State(initialValue: draft)
@@ -242,6 +254,17 @@ struct SettingsView: View {
                     Text("Capture date in strftime format. Today: “\(draft.albumName(for: Date()))”. Try %d %b %Y.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                Section("Automation") {
+                    Toggle("Import automatically when a card is inserted", isOn: $draft.autoImport)
+                    Toggle("Eject the card when the import is done", isOn: $draft.ejectWhenDone)
+                    Toggle("Open SD to Immich at login", isOn: $openAtLogin)
+                        .onChange(of: openAtLogin) { on in setOpenAtLogin(on) }
+                    if let loginNote {
+                        Text(loginNote).font(.caption).foregroundStyle(.orange)
+                    }
+                    Text("With both of the first two on: insert a card and walk away. You get a notification, and the card is ejected once everything is in Immich.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Section("Large files (optional)") {
                     TextField("Relay SSH host", text: $draft.relayHost, prompt: Text("user@host near Immich"))
                     Stepper("Use relay for files over \(draft.relayMinMB) MB", value: $draft.relayMinMB, in: 50...5000, step: 50)
@@ -252,7 +275,11 @@ struct SettingsView: View {
             .formStyle(.grouped)
             HStack {
                 if model.hasKey {
-                    Button("Remove API key", role: .destructive) { Keychain.delete(); model.hasKey = false }
+                    Button("Remove API key", role: .destructive) {
+                        Keychain.delete()
+                        model.hasKey = false
+                        model.cachedKey = nil
+                    }
                 }
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -262,18 +289,31 @@ struct SettingsView: View {
             }
             .padding()
         }
-        .frame(width: 560, height: 600)
+        .frame(width: 560, height: 680)
+    }
+
+    private func setOpenAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            loginNote = SMAppService.mainApp.status == .requiresApproval
+                ? "Approve SD to Immich in System Settings → General → Login Items." : nil
+        } catch {
+            loginNote = "Couldn't change the login item: \(error.localizedDescription)"
+            openAtLogin = SMAppService.mainApp.status == .enabled
+        }
     }
 
     private func persist() -> Bool {
         draft.server = draft.normalizedServer
         if !key.isEmpty {
-            guard Keychain.save(key.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard Keychain.save(trimmed) else {
                 (testResult, testOK) = ("Could not save the key to the Keychain.", false)
                 return false
             }
             key = ""
             model.hasKey = true
+            model.cachedKey = trimmed  // just saved: no need to read it back
         }
         do {
             try draft.save()
