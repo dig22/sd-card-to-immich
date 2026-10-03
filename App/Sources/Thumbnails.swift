@@ -9,6 +9,8 @@ final class ThumbnailCache: ObservableObject {
 
     func image(for url: URL) -> NSImage? { cache.object(forKey: url as NSURL) }
 
+    func insert(_ image: NSImage, for url: URL) { cache.setObject(image, forKey: url as NSURL) }
+
     func load(_ url: URL, size: CGFloat) async -> NSImage? {
         if let img = image(for: url) { return img }
         let scale = NSScreen.main?.backingScaleFactor ?? 2
@@ -45,16 +47,18 @@ struct ThumbnailTile: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.12))
-                if let image {
-                    Image(nsImage: image).resizable().scaledToFill()
-                } else {
-                    Image(systemName: file.kind == .video ? "video" : "photo").foregroundStyle(.secondary)
+            // The image is an overlay of a fixed-size base, so scaledToFill is cropped to the tile.
+            Color.secondary.opacity(0.12)
+                .frame(maxWidth: .infinity)
+                .frame(height: 96)
+                .overlay {
+                    if let image = image ?? ThumbnailCache.shared.image(for: file.url) {  // cached: no flicker
+                        Image(nsImage: image).resizable().scaledToFill()
+                    } else {
+                        Image(systemName: file.kind == .video ? "video" : "photo").foregroundStyle(.secondary)
+                    }
                 }
-            }
-            .frame(height: 96)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(alignment: .topTrailing) { badge.padding(5) }
             .overlay(alignment: .bottomLeading) {
                 if file.kind != .jpg {

@@ -1,25 +1,5 @@
 import SwiftUI
 
-@main
-struct SDToImmichApp: App {
-    @StateObject private var model = AppModel()
-
-    var body: some Scene {
-        WindowGroup("SD to Immich") {
-            ContentView()
-                .environmentObject(model)
-                .frame(minWidth: 720, minHeight: 640)
-        }
-        .windowResizability(.contentMinSize)
-        .commands {
-            CommandGroup(replacing: .newItem) {}
-            CommandGroup(after: .appSettings) {
-                Button("Settings…") { model.showSettings = true }.keyboardShortcut(",", modifiers: .command)
-            }
-        }
-    }
-}
-
 /// Single pane: connection status, the cards, actions, progress. No collapsible sidebar,
 /// so a detected card is always visible.
 struct ContentView: View {
@@ -154,6 +134,7 @@ struct ProgressPanel: View {
                 EmptyView()
             case .running:
                 ProgressView(value: model.fraction) { Text(model.detail).lineLimit(1) }
+                    .tint(.accentColor)  // stays blue when the window is in the background
             case .finished(let msg):
                 Label(msg, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
             case .failed(let msg):
@@ -226,11 +207,15 @@ struct SetupPrompt: View {
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
-    @State private var draft = AppSettings.load()
+    @State private var draft: AppSettings
     @State private var key = ""
     @State private var testResult: String?
     @State private var testOK = false
     @State private var testing = false
+
+    init(draft: AppSettings = AppSettings.load()) {
+        _draft = State(initialValue: draft)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

@@ -34,7 +34,10 @@ final class AppModel: ObservableObject {
     var isRunning: Bool { phase == .running }
     var selectedCard: CardInfo? { cards.first { $0.id == selected } ?? cards.first }
 
-    init() {
+    /// `preview: true` builds a model with no side effects (no volume scan, no
+    /// notification permission) for screenshots and SwiftUI previews.
+    init(preview: Bool = false) {
+        if preview { return }
         let nc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
             observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in

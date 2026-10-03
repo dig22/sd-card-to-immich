@@ -4,12 +4,16 @@
 
 Insert the card, click **Import to Immich**, done.
 
+<p align="center">
+  <img src="docs/demo.gif" alt="SD to Immich importing RAW photos and videos from a Sony SD card into Immich: thumbnails get a green tick as each file is uploaded" width="820">
+</p>
+
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)](#download)
 [![Immich](https://img.shields.io/badge/Immich-v3-4250af)](https://immich.app)
 [![Swift](https://img.shields.io/badge/Swift-native-F05138?logo=swift&logoColor=white)](#build-from-source)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**Contents:** [Features](#features) · [Download](#download) · [Setup](#setup) · [Supported cameras](#supported-cameras) · [How cards are detected](#how-cards-are-detected) · [Multiple cards](#multiple-sd-cards-and-dual-slot-cameras) · [How it works](#how-it-works) · [Settings](#settings) · [FAQ](#faq)
+**Contents:** [Features](#features) · [Screenshots](#screenshots) · [Download](#download) · [Setup](#setup) · [Supported cameras](#supported-cameras) · [How cards are detected](#how-cards-are-detected) · [Multiple cards](#multiple-sd-cards-and-dual-slot-cameras) · [How it works](#how-it-works) · [Settings](#settings) · [FAQ](#faq)
 
 ---
 
@@ -24,6 +28,14 @@ Insert the card, click **Import to Immich**, done.
 - **Native Mac app, nothing else to install.** Written in Swift. Detects a card the moment you insert it, shows live progress, notifies you when done, and ejects the card.
 - **Big videos that actually upload.** Optional SSH relay for multi-GB clips on slow connections (see [FAQ](#faq)).
 - **Private and safe.** Talks only to your Immich server. The API key is kept in the macOS Keychain. Files on the card are only read, never changed or deleted.
+
+## Screenshots
+
+| Importing | Done | Settings |
+|---|---|---|
+| ![Importing a camera SD card into Immich, with upload progress and per-photo status marks](docs/screenshot-importing.png) | ![Import finished: every photo and video on the card is in Immich](docs/screenshot-done.png) | ![Settings: Immich server URL, API key in the Keychain, album name format, videos, large-file relay](docs/screenshot-settings.png) |
+
+<sub>Demo content: the photos are generated placeholders and the server is fictional.</sub>
 
 ## Download
 
@@ -129,9 +141,11 @@ No. It is an independent open-source project that uses Immich's public API. An a
 ```sh
 git clone https://github.com/dig22/sd-card-to-immich.git
 cd sd-card-to-immich
-./build.sh 2.0.0      # needs Xcode or the Command Line Tools
+./build.sh 2.0.1      # needs Xcode or the Command Line Tools
 open "build/SD to Immich.app"
 ```
+
+`tools/make-screenshots.sh` regenerates the screenshots and GIF in `docs/` from the app's real views with demo data.
 
 ## License
 
