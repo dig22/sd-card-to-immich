@@ -53,6 +53,8 @@ struct ContentView: View {
                 SetupPrompt()
             } else if let card = model.selectedCard {
                 CardDetail(card: card)
+            } else if !model.blockedVolumes.isEmpty {
+                NoAccess()
             } else {
                 EmptyCard()
             }
@@ -81,6 +83,24 @@ struct EmptyCard: View {
             Text("Insert a camera SD card").font(.title2)
             Text("Cards with a DCIM folder appear here automatically.")
                 .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct NoAccess: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "lock.shield").font(.system(size: 48)).foregroundStyle(.orange)
+            Text("SD to Immich can't read “\(model.blockedVolumes.joined(separator: "”, “"))”").font(.title2)
+                .multilineTextAlignment(.center)
+            Text("Allow access in System Settings → Privacy & Security → Files and Folders → SD to Immich → Removable Volumes, then rescan.")
+                .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 420)
+            HStack {
+                Button("Open Privacy Settings") { model.openPrivacySettings() }.controlSize(.large)
+                Button("Rescan") { Task { await model.refresh(bringToFront: false) } }.controlSize(.large)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -276,6 +296,7 @@ struct SettingsView: View {
         do {
             try draft.save()
             model.settings = draft
+            Task { await model.refresh(bringToFront: false) }  // videos / RAW-only change the counts
             return true
         } catch {
             testResult = "Could not save settings: \(error.localizedDescription)"

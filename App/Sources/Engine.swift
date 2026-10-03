@@ -1,6 +1,6 @@
 import Foundation
 
-/// A mounted camera card as reported by `sd2immich.py --summary`.
+/// A mounted camera card and what would be imported from it (see `CardScanner`).
 struct CardInfo: Decodable, Identifiable, Hashable {
     let path: String
     let name: String
@@ -62,7 +62,7 @@ enum Engine {
         return p
     }
 
-    /// Runs to completion and returns stdout (used for --summary and --check).
+    /// Runs to completion and returns stdout (used for --check).
     static func run(_ args: [String], apiKey: String? = nil) async throws -> Data {
         let p = try makeProcess(args, apiKey: apiKey)
         let out = Pipe()
@@ -74,12 +74,6 @@ enum Engine {
             }
             do { try p.run() } catch { cont.resume(throwing: error) }
         }
-    }
-
-    static func summary() async throws -> [CardInfo] {
-        struct Summary: Decodable { let cards: [CardInfo] }
-        let data = try await run(["--summary"])
-        return try JSONDecoder().decode(Summary.self, from: data).cards
     }
 
     /// Checks the saved server and the given key; returns the Immich user name.

@@ -11,6 +11,8 @@ final class AppModel: ObservableObject {
     @Published var settings = AppSettings.load()
     @Published var hasKey = Keychain.read() != nil
     @Published var cards: [CardInfo] = []
+    /// Removable volumes macOS won't let us read yet (permission denied).
+    @Published var blockedVolumes: [String] = []
     @Published var selected: CardInfo.ID?
     @Published var phase: Phase = .idle
     @Published var fraction: Double = 0
@@ -41,7 +43,10 @@ final class AppModel: ObservableObject {
 
     func refresh(bringToFront: Bool) async {
         let before = Set(cards.map(\.id))
-        cards = (try? await Engine.summary()) ?? []
+        let (videos, rawOnly) = (settings.videos, settings.rawOnly)
+        let results = await Task.detached { CardScanner.scan(videos: videos, rawOnly: rawOnly) }.value
+        cards = results.compactMap { if case .card(let c) = $0 { return c } else { return nil } }
+        blockedVolumes = results.compactMap { if case .noAccess(let name, _) = $0 { return name } else { return nil } }
         if selected == nil || !cards.contains(where: { $0.id == selected }) {
             selected = cards.first?.id
         }
@@ -126,6 +131,10 @@ final class AppModel: ObservableObject {
         c.body = body
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString,
                                                                      content: c, trigger: nil))
+    }
+
+    func openPrivacySettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")!)
     }
 
     func reveal(_ card: CardInfo) {
