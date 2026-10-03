@@ -52,10 +52,16 @@ func makeCard() -> URL {
     touch(root.appendingPathComponent("DCIM/100GOPRO/GL010001.LRV"), bytes: 50_000)  // GoPro proxy: ignore
     touch(root.appendingPathComponent("PRIVATE/M4ROOT/CLIP/C0001.MP4"), bytes: 300_000)
     touch(root.appendingPathComponent("PRIVATE/M4ROOT/CLIP/C0001M01.XML"))
+    touch(root.appendingPathComponent("PRIVATE/M4ROOT/THMBNL/C0001T01.JPG"))
+    touch(root.appendingPathComponent("PRIVATE/DATABASE/DATABASE.BIN"))  // camera database: must survive
     return root
 }
 
 func names(_ files: [MediaFile]) -> [String] { files.map(\.url.lastPathComponent).sorted() }
+
+func byNameIn(_ card: CardInfo) -> [String: MediaFile] {
+    Dictionary(uniqueKeysWithValues: card.files.map { ($0.url.lastPathComponent, $0) })
+}
 
 @MainActor
 func runUnitTests() {
@@ -141,10 +147,51 @@ func runUnitTests() {
     st[all.files[1].url] = .failed
     check(!AppModel.verdict(card: c, statuses: st).safe, "not safe after a failed upload")
     check(!AppModel.verdict(card: c, statuses: [:]).safe, "not safe before anything was checked")
+    var tst = Dictionary(uniqueKeysWithValues: all.files.map { ($0.url, FileStatus.inImmich) })
+    tst[all.files[0].url] = .trashed
+    let tv = AppModel.verdict(card: c, statuses: tst)
+    check(!tv.safe && tv.message.contains("Immich's trash"), "NOT safe when an item is only in Immich's trash", tv.message)
     for x in all.files { st[x.url] = .inImmich }
     let excluded = AppModel.verdict(card: CardInfo(path: card.path, name: "CARD", files: all.files, excludedVideos: 2), statuses: st)
     check(!excluded.safe && excluded.message.contains("2 videos (Import videos is off)"), "not safe when settings left videos out",
           excluded.message)
+
+    print("Free up space")
+    let base = card.resolvingSymlinksInPath().path
+    func rel(_ u: URL) -> String { String(u.resolvingSymlinksInPath().path.dropFirst(base.count + 1)) }
+    eq(FreeSpace.companions(of: byName["DSC00001.ARW"]!).map(rel), ["DCIM/100MSDCF/DSC00001.JPG"], "a RAW's companion is its JPEG twin")
+    eq(FreeSpace.companions(of: byName["C0001.MP4"]!).map(rel).sorted(),
+       ["PRIVATE/M4ROOT/CLIP/C0001M01.XML", "PRIVATE/M4ROOT/THMBNL/C0001T01.JPG"], "a Sony clip's companions are its XML and thumbnail")
+    eq(FreeSpace.companions(of: byName["GX010001.MP4"]!).map(rel), ["DCIM/100GOPRO/GL010001.LRV"], "a GoPro clip's companion is its LRV proxy")
+    eq(FreeSpace.companions(of: byName["DSC00003.ARW"]!), [], "a RAW without a JPEG has no companions")
+    let fcard = CardInfo(path: card.path, name: "CARD", files: all.files)
+    let plan = FreeSpace.plan(card: fcard, verified: [byName["DSC00001.ARW"]!.url, byName["C0001.MP4"]!.url])
+    eq(plan.delete.map(rel).sorted(), ["DCIM/100MSDCF/DSC00001.ARW", "DCIM/100MSDCF/DSC00001.JPG", "PRIVATE/M4ROOT/CLIP/C0001.MP4",
+                                       "PRIVATE/M4ROOT/CLIP/C0001M01.XML", "PRIVATE/M4ROOT/THMBNL/C0001T01.JPG"],
+       "plan = verified files + their companions only")
+    check(plan.bytes > 300_000, "plan counts the bytes it frees", "\(plan.bytes)")
+    eq(FreeSpace.plan(card: fcard, verified: []).delete, [], "nothing verified, nothing planned")
+    // Real deletion, on a copy of the card.
+    let copy = URL(fileURLWithPath: card.path + "-copy")
+    try? FileManager.default.removeItem(at: copy)
+    try! FileManager.default.copyItem(at: card, to: copy)
+    defer { try? FileManager.default.removeItem(at: copy) }
+    let copyFiles = CardScanner.pickFiles(volume: copy, videos: true, rawOnly: false).files
+    let ccard = CardInfo(path: copy.path, name: "COPY", files: copyFiles)
+    let cby = Dictionary(uniqueKeysWithValues: copyFiles.map { ($0.url.lastPathComponent, $0.url) })
+    let cplan = FreeSpace.plan(card: ccard, verified: [cby["DSC00001.ARW"]!, cby["C0001.MP4"]!])
+    let result = FreeSpace.execute(cplan)
+    eq(result.deleted, 5, "deletes exactly the planned files")
+    check(result.failed.isEmpty, "no deletion failures")
+    let left = (FileManager.default.enumerator(atPath: copy.path)?.allObjects as? [String] ?? [])
+        .filter { !$0.hasSuffix("/") && (try? FileManager.default.attributesOfItem(atPath: copy.appendingPathComponent($0).path)[.type] as? FileAttributeType) == .typeRegular }
+        .sorted()
+    eq(left, ["DCIM/100GOPRO/GL010001.LRV", "DCIM/100GOPRO/GX010001.MP4", "DCIM/100MSDCF/DSC00002.JPG", "DCIM/100MSDCF/DSC00003.ARW",
+              "DCIM/100MSDCF/notes.txt", "PRIVATE/DATABASE/DATABASE.BIN"],
+       "unverified files, other files and the camera database stay")
+    var isDir: ObjCBool = false
+    check(FileManager.default.fileExists(atPath: copy.appendingPathComponent("DCIM/100MSDCF").path, isDirectory: &isDir) && isDir.boolValue,
+          "folders stay")
 
     print("Time left / speed")
     let now = Date()
@@ -201,6 +248,38 @@ func runIntegration() async {
             check(progressSeen, "upload progress is reported")
         } else {
             print("  (upload check skipped: set IMMICH_DUPLICATE_FILE to a file already in Immich)")
+        }
+
+        print("Free up space (integration)")
+        let none = try await FreeSpace.verify(card.files, client: client)
+        check(none.verified.isEmpty && none.trashed.isEmpty, "files that are not in Immich are never verified", "\(none.verified.count)")
+        if let path = env["IMMICH_DUPLICATE_FILE"] {
+            let inImmich = URL(fileURLWithPath: path)
+            let f = MediaFile(url: inImmich, kind: FileRules.kind(inImmich) ?? .jpg,
+                              size: Int64((try? inImmich.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0))
+            eq(try await FreeSpace.verify([f], client: client).verified, [inImmich], "a file that is in Immich is verified")
+            if let trashed = env["IMMICH_TRASHED_FILE"] {
+                let t = URL(fileURLWithPath: trashed)
+                let tf = MediaFile(url: t, kind: .jpg, size: Int64((try? t.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0))
+                let tv = try await FreeSpace.verify([tf], client: client)
+                check(tv.verified.isEmpty && tv.trashed == [t], "a file in Immich's trash is NOT treated as backed up (reported as trashed)")
+                // And the import/check reports it as trashed, not as "already in Immich".
+                let tcard = CardInfo(path: t.deletingLastPathComponent().path, name: "TRASHCARD", files: [tf])
+                let tout = try await Importer.run(card: tcard, settings: s, key: key, dryRun: true, events: ImportEvents(log: { _ in }, phase: { _, _ in }))
+                eq(tout.statuses[t], .trashed, "check marks a trashed match as trashed")
+                check(tout.message.contains("1 in Immich's trash") && tout.message.hasPrefix("0 new, 0 already"), "check message counts it as trashed", tout.message)
+                check(!AppModel.verdict(card: tcard, statuses: tout.statuses).safe, "and the card is not safe to format")
+            }
+
+            // JPEG left on a card whose RAW was imported earlier: verified through the recorded RAW checksum.
+            let saved = Ledger.url
+            Ledger.url = root.appendingPathComponent("ledger/raw-shots.json")  // temporary ledger
+            defer { Ledger.url = saved }
+            let jpg = byNameIn(card)["DSC00002.JPG"]!
+            Ledger.saveHashes([Ledger.key(jpg, CaptureDate.of(jpg)): try HashCache.sha1(f)])
+            eq(try await FreeSpace.verify([jpg], client: client).verified, [jpg.url], "a JPEG whose RAW is in Immich is verified via the RAW")
+            Ledger.saveHashes([:])
+            check(try await FreeSpace.verify([jpg], client: client).verified.isEmpty, "the same JPEG without a recorded RAW is not")
         }
     } catch {
         check(false, "integration", "\(error)")

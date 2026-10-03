@@ -375,7 +375,7 @@ enum Relay {
 /// Remembers imported RAW shots (file name + capture time) so their JPEG twins are never
 /// uploaded later, even from another card. Camera file numbers repeat, hence the time.
 enum Ledger {
-    static let url = FileManager.default.homeDirectoryForCurrentUser
+    static var url = FileManager.default.homeDirectoryForCurrentUser  // var: tests point it elsewhere
         .appendingPathComponent("Library/Application Support/sd2immich/raw-shots.json")
 
     static func key(_ f: MediaFile, _ taken: Date) -> String {
@@ -394,6 +394,20 @@ enum Ledger {
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? JSONEncoder().encode(s.sorted()).write(to: url, options: .atomic)
     }
+
+    /// Checksum of each imported RAW, by ledger key, so a JPEG whose RAW was imported from an
+    /// earlier card can be freed after re-checking that exact RAW with Immich.
+    static var hashesURL: URL { url.deletingLastPathComponent().appendingPathComponent("raw-hashes.json") }
+
+    static func loadHashes() -> [String: String] {
+        guard let d = try? Data(contentsOf: hashesURL) else { return [:] }
+        return (try? JSONDecoder().decode([String: String].self, from: d)) ?? [:]
+    }
+
+    static func saveHashes(_ h: [String: String]) {
+        try? FileManager.default.createDirectory(at: hashesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? JSONEncoder().encode(h).write(to: hashesURL, options: .atomic)
+    }
 }
 
 /// Per-file state shown on the thumbnail tiles.
@@ -402,6 +416,7 @@ enum FileStatus: Equatable {
     case new              // dry run: would be uploaded
     case uploading(Double)
     case inImmich         // already there, or uploaded in this run
+    case trashed          // the same file exists in Immich, but only in its trash (deleted after 30 days)
     case skipped(String)  // JPEG whose RAW was imported, duplicate on the card
     case failed
 }
@@ -483,6 +498,7 @@ enum Importer {
         events.log("Immich: \(settings.normalizedServer) as \(try await client.me())")
 
         var ledger = Ledger.load()
+        var rawHashes = Ledger.loadHashes()
         var albumId: [String: String] = [:]
         if !dryRun {
             for a in (try await client.call("GET", "albums", log: events.log) as? [[String: Any]]) ?? [] {
@@ -490,7 +506,7 @@ enum Importer {
             }
         }
         var seen = Set<String>()  // hashes already handled in this run (duplicates on the card)
-        var uploaded = 0, existing = 0, skippedJPG = 0, cardDupes = 0
+        var uploaded = 0, existing = 0, skippedJPG = 0, cardDupes = 0, trashed = 0
         var albumsTouched = Set<String>(), newPerAlbum: [String: Int] = [:]
         let totalBytes = max(1, files.reduce(Int64(0)) { $0 + $1.size })
         var doneBytes: Int64 = 0
@@ -525,15 +541,18 @@ enum Importer {
             let res = try await client.call("POST", "assets/bulk-upload-check",
                                             json: ["assets": fresh.map { ["id": $0.hash, "checksum": $0.hash] }], log: events.log)
             var assetOf: [String: String] = [:]
-            var accept = Set<String>()
+            var accept = Set<String>(), inTrash = Set<String>()
             for r in ((res as? [String: Any])?["results"] as? [[String: Any]]) ?? [] {
                 guard let id = r["id"] as? String else { continue }
                 if r["action"] as? String == "accept" { accept.insert(id) }
+                else if r["isTrashed"] as? Bool == true { inTrash.insert(id) }  // not a backup: Immich empties its trash
                 else if let a = r["assetId"] as? String { assetOf[id] = a }
             }
             existing += assetOf.count
+            trashed += fresh.filter { inTrash.contains($0.hash) }.count
             for i in fresh {
-                report(i.file.url, accept.contains(i.hash) ? (dryRun ? .new : .pending) : .inImmich)
+                report(i.file.url, accept.contains(i.hash) ? (dryRun ? .new : .pending)
+                                   : inTrash.contains(i.hash) ? .trashed : .inImmich)
             }
 
             if dryRun {
@@ -576,12 +595,17 @@ enum Importer {
                     uploaded += 1
                     events.log("↑ \(f.url.lastPathComponent) \(r.status)")
                 }
-                if i.file.kind == .raw { ledger.insert(Ledger.key(i.file, i.taken)) }
+                if i.file.kind == .raw {
+                    let k = Ledger.key(i.file, i.taken)
+                    ledger.insert(k)
+                    rawHashes[k] = i.hash
+                }
                 doneBytes += i.file.size
                 events.phase("Uploaded \(uploaded), \(existing) already in Immich", 0.02 + 0.95 * Double(doneBytes) / Double(totalBytes))
                 events.bytes(doneBytes, totalBytes)
             }
             Ledger.save(ledger)
+            Ledger.saveHashes(rawHashes)
 
             // 4. Albums for this batch.
             var members: [String: [String]] = [:]
@@ -600,16 +624,126 @@ enum Importer {
 
         if skippedJPG > 0 { events.log("Skipped \(skippedJPG) JPG(s) whose RAW was imported earlier") }
         if cardDupes > 0 { events.log("Skipped \(cardDupes) duplicate file(s) on the card") }
+        if trashed > 0 {
+            events.log("\(trashed) file(s) match photos in Immich's trash: restore them in Immich to keep them")
+        }
         let albums = albumsTouched.sorted().joined(separator: ", ")
         if dryRun {
             let per = newPerAlbum.keys.sorted().map { "\($0): \(newPerAlbum[$0]!)" }.joined(separator: ", ")
-            return "\(uploaded) new, \(existing) already in Immich" + (per.isEmpty ? "." : " (\(per)).")
+            return "\(uploaded) new, \(existing) already in Immich" + (trashed > 0 ? ", \(trashed) in Immich's trash" : "")
+                + (per.isEmpty ? "." : " (\(per)).")
         }
-        return "Imported \(uploaded) new, \(existing) already in Immich. Albums: \(albums.isEmpty ? "none" : albums)."
+        return "Imported \(uploaded) new, \(existing) already in Immich" + (trashed > 0 ? ", \(trashed) in Immich's trash" : "")
+            + ". Albums: \(albums.isEmpty ? "none" : albums)."
     }
 }
 
-// MARK: - Log file
+// MARK: - Free up space
+
+/// Deletes from the card what is confirmed in Immich. Only files whose checksum Immich
+/// reports as present (re-checked right before deleting) are removed, plus files that
+/// belong to them: the JPEG twin of a verified RAW, and the camera's sidecar XML and
+/// thumbnail of a verified Sony clip. Folders and the camera's database files stay.
+enum FreeSpace {
+    struct Plan: Equatable {
+        var delete: [URL]
+        var bytes: Int64
+    }
+
+    /// Files that belong to `file` and go with it (same folder, same base name, or Sony clip sidecars).
+    static func companions(of file: MediaFile) -> [URL] {
+        let dir = file.url.deletingLastPathComponent()
+        let stem = file.url.deletingPathExtension().lastPathComponent.uppercased()
+        // Match against the real directory listing: card file systems ignore case, so probing
+        // "X.jpg" would also "find" X.JPG and list the same file twice.
+        func entries(_ d: URL) -> [URL] {
+            ((try? FileManager.default.contentsOfDirectory(at: d, includingPropertiesForKeys: nil)) ?? [])
+                .filter { !$0.lastPathComponent.hasPrefix("._") }
+        }
+        func named(_ d: URL, _ names: Set<String>) -> [URL] {
+            entries(d).filter { names.contains($0.lastPathComponent.uppercased()) }
+        }
+        switch file.kind {
+        case .raw:
+            return named(dir, Set(["JPG", "JPEG", "HIF", "HEIC"].map { "\(stem).\($0)" }))
+        case .video:
+            var out = named(dir, ["\(stem)M01.XML", "\(stem).THM", "\(stem).LRV"])  // Sony XML; GoPro THM/LRV
+            out += named(dir.deletingLastPathComponent().appendingPathComponent("THMBNL"), ["\(stem)T01.JPG"])  // Sony
+            if stem.hasPrefix("GX") || stem.hasPrefix("GH") {  // GoPro proxy GL010001.LRV for GX010001.MP4
+                out += named(dir, ["GL\(stem.dropFirst(2)).LRV"])
+            }
+            return out
+        case .jpg:
+            return []
+        }
+    }
+
+    /// What would be deleted, given the files Immich has confirmed (`verified`).
+    static func plan(card: CardInfo, verified: Set<URL>) -> Plan {
+        var urls: [URL] = []
+        for f in card.files where verified.contains(f.url) {
+            urls.append(f.url)
+            urls += companions(of: f)
+        }
+        var seen = Set<URL>()
+        urls = urls.filter { seen.insert($0.standardizedFileURL).inserted }
+        let bytes = urls.reduce(Int64(0)) { sum, u in
+            sum + Int64((try? u.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        }
+        return Plan(delete: urls, bytes: bytes)
+    }
+
+    /// Re-checks with Immich which of the candidates it really has (by checksum). A JPEG also
+    /// counts as verified when the RAW of the same shot, imported earlier, is still in Immich.
+    /// Files that only match something in Immich's trash are returned separately, never as verified.
+    static func verify(_ candidates: [MediaFile], client: ImmichClient) async throws -> (verified: Set<URL>, trashed: Set<URL>) {
+        var byHash: [String: [URL]] = [:]
+        let rawHashes = Ledger.loadHashes()
+        for f in candidates {
+            try Task.checkCancellation()
+            byHash[try HashCache.sha1(f), default: []].append(f.url)
+            if f.kind == .jpg, let raw = rawHashes[Ledger.key(f, CaptureDate.of(f))] {
+                byHash[raw, default: []].append(f.url)
+            }
+        }
+        HashCache.save()
+        var verified = Set<URL>(), trashed = Set<URL>()
+        let hashes = Array(byHash.keys)
+        for start in stride(from: 0, to: hashes.count, by: 200) {
+            let batch = hashes[start..<min(start + 200, hashes.count)]
+            let res = try await client.call("POST", "assets/bulk-upload-check",
+                                            json: ["assets": batch.map { ["id": $0, "checksum": $0] }])
+            for r in ((res as? [String: Any])?["results"] as? [[String: Any]]) ?? [] {
+                // "reject" with an assetId = Immich already has this exact file (and it isn't in the trash).
+                guard r["action"] as? String == "reject", r["assetId"] != nil, let id = r["id"] as? String else { continue }
+                if r["isTrashed"] as? Bool == true { trashed.formUnion(byHash[id] ?? []) }
+                else { verified.formUnion(byHash[id] ?? []) }
+            }
+        }
+        return (verified, trashed.subtracting(verified))
+    }
+
+    /// Deletes the plan's files; returns (deleted count, bytes freed, failures).
+    static func execute(_ plan: Plan) -> (deleted: Int, bytes: Int64, failed: [String]) {
+        var deleted = 0, bytes: Int64 = 0
+        var failed: [String] = []
+        for u in plan.delete {
+            let size = Int64((try? u.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            do {
+                try FileManager.default.removeItem(at: u)
+                deleted += 1
+                bytes += size
+                // macOS "._" metadata companion, if any
+                try? FileManager.default.removeItem(at: u.deletingLastPathComponent().appendingPathComponent("._" + u.lastPathComponent))
+            } catch {
+                failed.append(u.lastPathComponent)
+            }
+        }
+        return (deleted, bytes, failed)
+    }
+}
+
+
 
 enum Log {
     static let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/SD to Immich.log")

@@ -34,6 +34,9 @@ final class AppModel: ObservableObject {
         let message: String
     }
 
+    /// Pending "Free up space" deletion, waiting for the user's confirmation.
+    @Published var freePlan: (card: CardInfo, plan: FreeSpace.Plan, kept: Int)?
+
     /// The API key after the first Keychain read of this launch: macOS is asked at most once.
     var cachedKey: String?
     private var task: Task<Void, Never>?
@@ -157,16 +160,76 @@ final class AppModel: ObservableObject {
 
     func cancel() { task?.cancel() }
 
+    /// Step 1 of "Free up space": verify every file on the card with Immich, then ask.
+    func prepareFreeSpace() {
+        guard let card = selectedCard else { return }
+        Log.write("free space \(card.name): verifying \(card.files.count) file(s)")
+        withKey { key in
+            self.log = []
+            self.safeToFormat = nil
+            self.phase = .running
+            self.fraction = 0
+            self.transferInfo = ""
+            self.detail = "Checking what on \(card.name) is safely in Immich…"
+            let settings = self.settings
+            self.task = Task {
+                do {
+                    let client = try ImmichClient(server: settings.normalizedServer, key: key)
+                    let (verified, trashed) = try await FreeSpace.verify(card.files, client: client)
+                    for f in card.files {
+                        self.statuses[f.url] = verified.contains(f.url) ? .inImmich : trashed.contains(f.url) ? .trashed : .new
+                    }
+                    let plan = FreeSpace.plan(card: card, verified: verified)
+                    let kept = card.files.count - verified.count
+                    Log.write("free space \(card.name): \(verified.count) verified, \(trashed.count) only in trash, plan \(plan.delete.count) file(s) / \(plan.bytes) bytes, keep \(kept)")
+                    self.fraction = 1
+                    if plan.delete.isEmpty {
+                        self.phase = .finished(trashed.isEmpty
+                            ? "Nothing on \(card.name) is in Immich yet, so nothing can be removed."
+                            : "Nothing removed: \(trashed.count) item\(trashed.count == 1 ? " is" : "s are") only in Immich's trash. Restore \(trashed.count == 1 ? "it" : "them") in Immich first.")
+                    } else {
+                        self.phase = .idle
+                        self.freePlan = (card, plan, kept)
+                    }
+                } catch {
+                    self.phase = .failed(error.localizedDescription)
+                    Log.write("free space \(card.name) failed: \(error.localizedDescription)")
+                }
+                self.task = nil
+            }
+        }
+    }
+
+    /// Step 2: the user confirmed. Deletes exactly the planned files.
+    func confirmFreeSpace() {
+        guard let pending = freePlan else { return }
+        freePlan = nil
+        let r = FreeSpace.execute(pending.plan)
+        let freed = ByteCountFormatter.string(fromByteCount: r.bytes, countStyle: .file)
+        var msg = "Freed \(freed) on \(pending.card.name): deleted \(r.deleted) file\(r.deleted == 1 ? "" : "s") that are in Immich."
+        if pending.kept > 0 { msg += " Kept \(pending.kept) that are not in Immich." }
+        if !r.failed.isEmpty { msg += " Could not delete: \(r.failed.prefix(5).joined(separator: ", "))." }
+        phase = r.failed.isEmpty ? .finished(msg) : .failed(msg)
+        append(msg)
+        Log.write("free space \(pending.card.name): deleted \(r.deleted), \(r.bytes) bytes, kept \(pending.kept), failed \(r.failed.count)")
+        notify("Space freed", msg)
+        Task { await refresh(bringToFront: false) }
+    }
+
     /// The card is safe to format when every file the import covers is confirmed in Immich
     /// (or deliberately skipped: a JPEG whose RAW is in Immich, a duplicate on the card), and
     /// the settings didn't leave anything out.
     nonisolated static func verdict(card: CardInfo, statuses: [URL: FileStatus]) -> Verdict {
+        let inTrash = card.files.filter { statuses[$0.url] == .trashed }.count
         let notBackedUp = card.files.filter { f in
             switch statuses[f.url] ?? .pending {
-            case .inImmich, .skipped: return false
+            case .inImmich, .skipped, .trashed: return false
             default: return true
             }
         }.count
+        if inTrash > 0 {
+            return Verdict(safe: false, message: "\(inTrash) item\(inTrash == 1 ? " matches a photo" : "s match photos") in Immich's trash, which is emptied after 30 days. Restore \(inTrash == 1 ? "it" : "them") in Immich before formatting \(card.name).")
+        }
         var excluded: [String] = []
         if card.excludedVideos > 0 { excluded.append("\(card.excludedVideos) video\(card.excludedVideos == 1 ? "" : "s") (Import videos is off)") }
         if card.excludedJPG > 0 { excluded.append("\(card.excludedJPG) JPEG-only photo\(card.excludedJPG == 1 ? "" : "s") (RAW only is on)") }

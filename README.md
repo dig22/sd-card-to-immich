@@ -25,7 +25,8 @@ Insert the card, click **Import to Immich**, done. Or turn on auto-import and ju
 - **Photos and videos.** Video clips are imported too, including Sony's separate video folder.
 - **See every file.** Thumbnails of every photo and video on the card (RAW previews included), each with a status mark: ✓ in Immich, uploading, new, or skipped.
 - **Hands-free.** Optionally import automatically when a card is inserted, eject it when done, and open at login.
-- **Safe to format?** After an import the app tells you whether every photo and video on the card is confirmed in Immich, or what is missing.
+- **Safe to format?** After an import the app tells you whether every photo and video on the card is confirmed in Immich, or what is missing. Photos that only exist in Immich's trash don't count as backed up.
+- **Free up space.** One button deletes from the card exactly what is confirmed in Immich (re-checked right before deleting), plus the JPEG twins of those RAWs and the camera's sidecar files. Everything else stays.
 - **Fast, with an ETA.** Works in batches of 20, so uploads start within seconds, and shows time left and speed. Checksums are cached: re-checking a card takes about a second.
 - **Native Mac app, nothing else to install.** Written in Swift. Detects a card the moment you insert it, shows live progress, notifies you when done, and ejects the card.
 - **Big videos that actually upload.** Optional SSH relay for multi-GB clips on slow connections (see [FAQ](#faq)).
@@ -121,7 +122,13 @@ Settings other than the key are stored in `~/.config/sd2immich/config.json` (rea
 Install SD to Immich, add your server URL and an API key in Settings, insert the card and click **Import to Immich**. No command line needed.
 
 **Does it delete or change anything on the SD card?**
-No. It only reads. When an import finishes it tells you whether the card is safe to format: everything on it is confirmed in Immich, nothing was left out by your settings. Then format it in your camera.
+Importing only reads the card. Files are deleted only when you click **Free up space** and confirm. When an import finishes the app tells you whether the card is safe to format; you can then format it in your camera, or use Free up space.
+
+**What exactly does "Free up space" delete?**
+Right before deleting, the app checks every photo and video on the card against Immich by checksum. It deletes only the ones Immich has (and not just in its trash), plus files that belong to them: the JPEG twin of each confirmed RAW (also when that RAW was imported from an earlier card), and the sidecar XML and thumbnail of Sony clips (GoPro: LRV/THM). Files that aren't in Immich, folders and the camera's database files stay. It asks for confirmation with the number of files and the space it frees.
+
+**Why does it say a photo is "in Immich's trash"?**
+The card has a photo whose exact copy was deleted in Immich and is waiting in Immich's trash, which is emptied after 30 days. The app doesn't count it as backed up: restore it in Immich (Trash → Restore) if you want to keep it, then check again.
 
 **Why is the JPEG skipped when I shoot RAW+JPEG?**
 Immich shows RAW files with previews, so keeping both would double your library with near-identical images. Turn on "RAW only" to skip JPEG-only shots as well.
@@ -146,7 +153,7 @@ No. It is an independent open-source project that uses Immich's public API. An a
 ```sh
 git clone https://github.com/dig22/sd-card-to-immich.git
 cd sd-card-to-immich
-./build.sh 2.1.0      # needs Xcode or the Command Line Tools
+./build.sh 2.2.0      # needs Xcode or the Command Line Tools
 open "build/SD to Immich.app"
 ```
 

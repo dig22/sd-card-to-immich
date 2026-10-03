@@ -104,6 +104,18 @@ struct CardList: View {
 struct Actions: View {
     @EnvironmentObject var model: AppModel
     let card: CardInfo
+
+    private var freeTitle: String {
+        guard let p = model.freePlan else { return "" }
+        return "Free \(ByteCountFormatter.string(fromByteCount: p.plan.bytes, countStyle: .file)) on \(p.card.name)?"
+    }
+
+    private var freeMessage: String {
+        guard let p = model.freePlan else { return "" }
+        var m = "\(p.plan.delete.count) files will be deleted from the card. Every photo and video among them was just confirmed in Immich; the rest are their JPEG twins and camera sidecar files."
+        if p.kept > 0 { m += " \(p.kept) file\(p.kept == 1 ? " is" : "s are") not in Immich and will be kept." }
+        return m + " This can't be undone. Afterwards, format the card in your camera for a clean start."
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("RAW is uploaded for every shot and its JPEG twin is skipped. Anything already in Immich is skipped and still added to its day album (e.g. “\(model.settings.albumName(for: Date()))”).")
@@ -120,6 +132,19 @@ struct Actions: View {
                     Button("Check what's new") { model.start(dryRun: true) }.controlSize(.large)
                 }
                 Spacer()
+                Button { model.prepareFreeSpace() } label: { Label("Free up space…", systemImage: "trash") }
+                    .disabled(model.isRunning || card.files.isEmpty || !model.isConfigured)
+                    .help("Delete from the card only what is confirmed in Immich")
+                    // Attached here, not to ContentView: a view with an .alert plus a
+                    // .confirmationDialog only presents one of them on macOS.
+        .confirmationDialog(freeTitle, isPresented: Binding(
+            get: { model.freePlan != nil }, set: { if !$0 { model.freePlan = nil } }), titleVisibility: .visible) {
+            Button("Delete \(model.freePlan?.plan.delete.count ?? 0) files", role: .destructive) { model.confirmFreeSpace() }
+            Button("Cancel", role: .cancel) { model.freePlan = nil }
+        } message: {
+            Text(freeMessage)
+        }
+
                 Button("Eject \(card.name)") { model.eject(card) }.disabled(model.isRunning)
             }
         }

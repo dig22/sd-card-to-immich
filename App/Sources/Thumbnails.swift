@@ -94,6 +94,9 @@ struct ThumbnailTile: View {
         case .inImmich:
             Image(systemName: "checkmark.circle.fill").font(.system(size: 20))
                 .symbolRenderingMode(.palette).foregroundStyle(.white, .green)
+        case .trashed:
+            Image(systemName: "trash.circle.fill").font(.system(size: 20))
+                .symbolRenderingMode(.palette).foregroundStyle(.white, .orange)
         case .skipped:
             Image(systemName: "minus.circle.fill").font(.system(size: 18))
                 .symbolRenderingMode(.palette).foregroundStyle(.white, .gray)
@@ -110,6 +113,7 @@ struct ThumbnailTile: View {
         case .new: return "New: will be uploaded · \(size)"
         case .uploading(let p): return "Uploading \(Int(p * 100))%"
         case .inImmich: return "In Immich"
+        case .trashed: return "Only in Immich's trash: restore it in Immich to keep it"
         case .skipped(let why): return "Skipped: \(why)"
         case .failed: return "Upload failed"
         }
@@ -125,9 +129,11 @@ struct StatusLegend: View {
         let inImmich = s.filter { $0 == .inImmich }.count
         let new = s.filter { $0 == .new }.count
         let skipped = s.filter { if case .skipped = $0 { return true } else { return false } }.count
+        let trashed = s.filter { $0 == .trashed }.count
         HStack(spacing: 14) {
             Label("\(inImmich) in Immich", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
             if new > 0 { Label("\(new) new", systemImage: "circle.fill").foregroundStyle(Color.accentColor) }
+            if trashed > 0 { Label("\(trashed) in Immich's trash", systemImage: "trash.circle.fill").foregroundStyle(.orange) }
             if skipped > 0 { Label("\(skipped) skipped", systemImage: "minus.circle.fill").foregroundStyle(.secondary) }
             Spacer()
         }
