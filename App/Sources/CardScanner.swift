@@ -17,27 +17,50 @@ enum CardScanner {
         case noAccess(name: String, path: String)
     }
 
+    /// Appends to ~/Library/Logs/SD to Immich.log (card detection is the part most
+    /// affected by macOS privacy settings, so it explains itself there).
+    static func diag(_ msg: String) {
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/SD to Immich.log")
+        let line = "\(ISO8601DateFormatter().string(from: Date())) \(msg)\n"
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile()
+            h.write(Data(line.utf8))
+            try? h.close()
+        } else {
+            try? Data(line.utf8).write(to: url)
+        }
+    }
+
     static func scan(videos: Bool, rawOnly: Bool) -> [Result] {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.volumeIsRemovableKey, .volumeIsEjectableKey, .volumeIsInternalKey, .volumeNameKey]
         let volumes = fm.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
+        diag("scan: \(volumes.count) volume(s): \(volumes.map(\.path).joined(separator: ", "))")
         var out: [Result] = []
         for vol in volumes where vol.path.hasPrefix("/Volumes/") {
             let v = try? vol.resourceValues(forKeys: Set(keys))
             let removable = (v?.volumeIsRemovable ?? false) || (v?.volumeIsEjectable ?? false)
             let name = v?.volumeName ?? vol.lastPathComponent
             let dcim = vol.appendingPathComponent("DCIM")
+            let top: [String]
             do {
-                _ = try fm.contentsOfDirectory(atPath: vol.path)  // triggers the macOS prompt on first use
-            } catch let e as NSError where e.domain == NSCocoaErrorDomain && e.code == NSFileReadNoPermissionError {
+                top = try fm.contentsOfDirectory(atPath: vol.path)  // triggers the macOS prompt on first use
+            } catch let e as NSError {
+                diag("\(vol.path): removable=\(removable) cannot list: \(e.domain) \(e.code) \(e.localizedDescription)")
                 if removable { out.append(.noAccess(name: name, path: vol.path)) }
-                continue
-            } catch {
                 continue
             }
             var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: dcim.path, isDirectory: &isDir), isDir.boolValue else { continue }
-            out.append(.card(count(volume: vol, name: name, videos: videos, rawOnly: rawOnly)))
+            let hasDCIM = fm.fileExists(atPath: dcim.path, isDirectory: &isDir) && isDir.boolValue
+            diag("\(vol.path): removable=\(removable) entries=\(top.count) DCIM=\(hasDCIM)")
+            if !hasDCIM {
+                // Listed fine but no DCIM visible: on a removable card that usually means a privacy block.
+                if removable && top.contains("DCIM") { out.append(.noAccess(name: name, path: vol.path)) }
+                continue
+            }
+            let card = count(volume: vol, name: name, videos: videos, rawOnly: rawOnly)
+            diag("\(vol.path): card raw=\(card.raw) jpg=\(card.jpg) videos=\(card.videos)")
+            out.append(.card(card))
         }
         return out
     }

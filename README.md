@@ -95,6 +95,9 @@ That is Immich's request timeout on a slow connection. Use a faster network to t
 **Which cameras are supported?**
 Any camera that writes a standard `DCIM` folder. Sony's separate video folder is supported. Tested with a Sony ZV-E10 II and Immich v3.2.
 
+**My SD card does not show up.**
+The app needs permission to read removable volumes: allow the macOS prompt, or turn it on in **System Settings → Privacy & Security → Files and Folders → SD to Immich → Removable Volumes**, then click Rescan. Each scan is logged to `~/Library/Logs/SD to Immich.log` (which volumes were seen and why a card was or wasn't picked up).
+
 **Is this an official Immich app?**
 No. It is an independent project that uses Immich's public API.
 

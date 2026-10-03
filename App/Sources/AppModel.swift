@@ -42,6 +42,7 @@ final class AppModel: ObservableObject {
     }
 
     func refresh(bringToFront: Bool) async {
+        CardScanner.diag("refresh (bringToFront=\(bringToFront))")
         let before = Set(cards.map(\.id))
         let (videos, rawOnly) = (settings.videos, settings.rawOnly)
         let results = await Task.detached { CardScanner.scan(videos: videos, rawOnly: rawOnly) }.value
