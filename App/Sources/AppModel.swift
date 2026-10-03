@@ -5,35 +5,40 @@ import UserNotifications
 @MainActor
 final class AppModel: ObservableObject {
     enum Phase: Equatable {
-        case idle, scanning, uploading, finished(String), failed(String)
+        case idle, running, finished(String), failed(String)
     }
 
     @Published var settings = AppSettings.load()
-    @Published var hasKey = Keychain.read() != nil
+    @Published var hasKey = Keychain.exists()
     @Published var cards: [CardInfo] = []
     /// Removable volumes macOS won't let us read yet (permission denied).
     @Published var blockedVolumes: [String] = []
     @Published var selected: CardInfo.ID?
+    @Published var scanning = false
     @Published var phase: Phase = .idle
     @Published var fraction: Double = 0
     @Published var detail = ""
     @Published var log: [String] = []
+    @Published var statuses: [URL: FileStatus] = [:]
+    @Published var showLog = false
     @Published var showSettings = false
+    /// Shown before the first Keychain read of an app version (macOS will ask once).
+    @Published var keychainNotice: (() -> Void)?
 
-    private var process: Process?
+    private var task: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
+    private static let noticeKey = "keychainNoticeShownForVersion"
+    private var appVersion: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?" }
 
     var isConfigured: Bool { !settings.normalizedServer.isEmpty && hasKey }
-    var isRunning: Bool { phase == .scanning || phase == .uploading }
+    var isRunning: Bool { phase == .running }
     var selectedCard: CardInfo? { cards.first { $0.id == selected } ?? cards.first }
 
     init() {
         let nc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
-            observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                Task { @MainActor in
-                    await self?.refresh(bringToFront: name == NSWorkspace.didMountNotification)
-                }
+            observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in await self?.refresh(bringToFront: name == NSWorkspace.didMountNotification) }
             })
         }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -42,96 +47,96 @@ final class AppModel: ObservableObject {
     }
 
     func refresh(bringToFront: Bool) async {
-        CardScanner.diag("refresh (bringToFront=\(bringToFront))")
+        scanning = true
         let before = Set(cards.map(\.id))
         let (videos, rawOnly) = (settings.videos, settings.rawOnly)
         let results = await Task.detached { CardScanner.scan(videos: videos, rawOnly: rawOnly) }.value
         cards = results.compactMap { if case .card(let c) = $0 { return c } else { return nil } }
-        blockedVolumes = results.compactMap { if case .noAccess(let name, _) = $0 { return name } else { return nil } }
-        if selected == nil || !cards.contains(where: { $0.id == selected }) {
-            selected = cards.first?.id
-        }
-        // A newly inserted card: show it.
+        blockedVolumes = results.compactMap { if case .noAccess(let n) = $0 { return n } else { return nil } }
+        if selected == nil || !cards.contains(where: { $0.id == selected }) { selected = cards.first?.id }
+        if !isRunning { statuses = statuses.filter { url, _ in cards.contains { $0.files.contains { $0.url == url } } } }
+        scanning = false
+        Log.write("ui: showing \(cards.count) card(s) [\(cards.map(\.name).joined(separator: ", "))], configured=\(isConfigured)")
         if bringToFront, let new = cards.first(where: { !before.contains($0.id) }) {
             selected = new.id
             NSApp.activate(ignoringOtherApps: true)
         }
     }
 
+    /// Reads the API key, first explaining the one-time macOS prompt after an app update.
+    func withKey(_ body: @escaping (String) -> Void) {
+        let read = { [weak self] in
+            guard let self else { return }
+            UserDefaults.standard.set(self.appVersion, forKey: Self.noticeKey)
+            if let k = Keychain.read() {
+                body(k)
+            } else {
+                self.hasKey = Keychain.exists()
+                self.phase = .failed("Couldn't read the API key from the Keychain. Enter it again in Settings.")
+            }
+        }
+        if UserDefaults.standard.string(forKey: Self.noticeKey) == appVersion {
+            read()
+        } else {
+            keychainNotice = read  // the view explains first, then calls this
+        }
+    }
+
     func start(dryRun: Bool) {
-        guard let card = selectedCard, let key = Keychain.read() else { return }
+        guard let card = selectedCard else { return }
+        withKey { key in self.run(card: card, key: key, dryRun: dryRun) }
+    }
+
+    private func run(card: CardInfo, key: String, dryRun: Bool) {
         log = []
+        statuses = [:]
         fraction = 0
         detail = "Reading \(card.name)…"
-        phase = .scanning
-        var args = ["--card", card.path]
-        if dryRun { args.append("--dry-run") }
-        if !settings.videos { args.append("--no-videos") }
-        if settings.rawOnly { args.append("--raw-only") }
-        do {
-            process = try Engine.startImport(args: args, apiKey: key, onEvent: { ev in
-                Task { @MainActor in self.handle(ev) }
-            }, onExit: { status in
-                Task { @MainActor in self.finished(status: status, card: card, dryRun: dryRun) }
-            })
-        } catch {
-            phase = .failed(error.localizedDescription)
-        }
-    }
-
-    func cancel() {
-        process?.terminate()
-    }
-
-    private func handle(_ ev: EngineEvent) {
-        if !ev.text.isEmpty && ev.type != "hashing" {
-            log.append(contentsOf: ev.text.split(separator: "\n").map(String.init))
-            if log.count > 500 { log.removeFirst(log.count - 500) }
-        }
-        switch ev.type {
-        case "hashing":  // reading + checksumming the card: first 15 % of the bar
-            if let n = ev.n, let t = ev.total, t > 0 {
-                fraction = 0.15 * Double(n) / Double(t)
-                detail = "Checking \(n) of \(t) files…"
+        phase = .running
+        let settings = self.settings
+        let events = ImportEvents(
+            log: { line in Task { @MainActor in self.append(line) } },
+            phase: { text, f in Task { @MainActor in self.detail = text; self.fraction = f } },
+            status: { url, st in Task { @MainActor in self.statuses[url] = st } })
+        task = Task {
+            do {
+                let msg = try await Importer.run(card: card, settings: settings, key: key, dryRun: dryRun, events: events)
+                fraction = 1
+                phase = .finished(msg)
+                append(msg)
+                if !dryRun { notify("Import finished", msg) }
+            } catch is CancellationError {
+                phase = .failed("Cancelled.")
+            } catch {
+                phase = .failed(error.localizedDescription)
+                append("Error: \(error.localizedDescription)")
+                if !dryRun { notify("Import failed", error.localizedDescription) }
             }
-        case "plan":
-            let new = ev.new ?? 0
-            detail = new == 0 ? "Nothing new: everything is already in Immich."
-                              : "\(new) new, \(ev.existing ?? 0) already in Immich"
-            phase = .uploading
-        case "progress":
-            if let f = ev.fraction { fraction = 0.15 + 0.85 * f }
-            if let n = ev.n, let t = ev.total { detail = "Uploading \(n) of \(t)…" }
-        case "album":
-            detail = "Updating albums…"
-        case "done":
-            phase = .finished(ev.text)
-        case "error":
-            phase = .failed(ev.text)
-        default:
-            break
+            task = nil
         }
     }
 
-    private func finished(status: Int32, card: CardInfo, dryRun: Bool) {
-        process = nil
-        switch phase {
-        case .finished(let msg):
-            fraction = 1
-            if !dryRun { notify(title: "Import finished", body: msg) }
-        case .failed(let msg):
-            notify(title: "Import failed", body: msg)
-        default:
-            phase = status == 15 ? .failed("Cancelled.") : .failed("Stopped unexpectedly (exit \(status)). See the log.")
+    func cancel() { task?.cancel() }
+
+    private func append(_ line: String) {
+        log.append(line)
+        if log.count > 500 { log.removeFirst(log.count - 500) }
+    }
+
+    func testConnection(server: String, key: String) async -> (ok: Bool, message: String) {
+        do {
+            let user = try await ImmichClient(server: server, key: key).me()
+            return (true, "Connected as \(user)")
+        } catch {
+            return (false, error.localizedDescription)
         }
     }
 
-    private func notify(title: String, body: String) {
+    private func notify(_ title: String, _ body: String) {
         let c = UNMutableNotificationContent()
         c.title = title
         c.body = body
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString,
-                                                                     content: c, trigger: nil))
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
     }
 
     func openPrivacySettings() {

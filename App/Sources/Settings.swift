@@ -1,8 +1,8 @@
 import Foundation
 import Security
 
-/// Non-secret settings, shared with the engine via ~/.config/sd2immich/config.json
-/// (written with 0600 permissions). The API key is NOT stored here; see `Keychain`.
+/// Non-secret settings in ~/.config/sd2immich/config.json (0600). The API key is NOT
+/// stored here; see `Keychain`.
 struct AppSettings: Codable, Equatable {
     var server: String = ""
     var albumFormat: String = "%Y-%m-%d"
@@ -54,6 +54,14 @@ struct AppSettings: Codable, Equatable {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Self.url.path)
     }
 
+    /// Album name for a capture date, from the strftime-style `albumFormat`.
+    func albumName(for date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = strftimeToDateFormat(albumFormat.isEmpty ? "%Y-%m-%d" : albumFormat)
+        return f.string(from: date)
+    }
+
     /// "https://immich.example.com/" -> "https://immich.example.com"
     var normalizedServer: String {
         var s = server.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -64,16 +72,28 @@ struct AppSettings: Codable, Equatable {
     }
 }
 
-/// Immich API key in the login Keychain (generic password, service "sd2immich").
-/// The CLI reads the same item: `security find-generic-password -s sd2immich -w`.
+/// Immich API key in the login Keychain (generic password, service "sd-card-to-immich").
+///
+/// The item is created by the app itself, so reading it normally needs no confirmation.
+/// macOS asks again only when the app's code signature changes (an update of this
+/// unsigned app); `AppModel.withKey` explains that before the first read of a version.
 enum Keychain {
-    static let service = "sd2immich"
+    static let service = "sd-card-to-immich"
     static var account: String { NSUserName() }
 
     private static var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service,
          kSecAttrAccount as String: account]
+    }
+
+    /// Whether a key is stored. Asks only for attributes, which never shows a prompt.
+    static func exists() -> Bool {
+        var q = query
+        q[kSecReturnAttributes as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: AnyObject?
+        return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess
     }
 
     static func read() -> String? {
@@ -86,19 +106,34 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
+    /// Replaces the item (delete + add) so this app build owns it and can read it silently.
     static func save(_ key: String) -> Bool {
-        let data = Data(key.utf8)
-        let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var add = query
-            add[kSecValueData as String] = data
-            add[kSecAttrLabel as String] = "SD to Immich API key"
-            return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
-        }
-        return status == errSecSuccess
+        SecItemDelete(query as CFDictionary)
+        var add = query
+        add[kSecValueData as String] = Data(key.utf8)
+        add[kSecAttrLabel as String] = "SD to Immich: Immich API key"
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 
     static func delete() {
         SecItemDelete(query as CFDictionary)
     }
+}
+
+/// strftime ("%Y-%m-%d") -> DateFormatter pattern ("yyyy-MM-dd"); literal text is quoted.
+func strftimeToDateFormat(_ s: String) -> String {
+    let map: [Character: String] = ["Y": "yyyy", "y": "yy", "m": "MM", "d": "dd", "e": "d", "b": "MMM", "B": "MMMM",
+                                    "a": "EEE", "A": "EEEE", "H": "HH", "M": "mm", "j": "DDD"]
+    var out = ""
+    var i = s.startIndex
+    while i < s.endIndex {
+        if s[i] == "%", s.index(after: i) < s.endIndex {
+            out += map[s[s.index(after: i)]] ?? ""
+            i = s.index(i, offsetBy: 2)
+        } else {
+            out += s[i].isLetter ? "'\(s[i])'" : (s[i] == "'" ? "''" : String(s[i]))
+            i = s.index(after: i)
+        }
+    }
+    return out
 }

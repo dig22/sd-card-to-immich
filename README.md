@@ -16,10 +16,11 @@ Insert the card, click **Import to Immich**, done. The app uploads the RAW file 
 - **No duplicates.** Every file is checked against your Immich library by SHA-1 checksum before upload, so re-inserting a card or importing an overlapping card uploads only what is new.
 - **Albums by capture date.** Photos and videos go into albums like `2026-10-02` (format configurable, e.g. `02 Oct 2026`), taken from the EXIF date. Existing albums are reused.
 - **Videos included.** MP4/MOV/MTS clips from `DCIM` and from Sony's `PRIVATE/M4ROOT/CLIP` folder (Sony Alpha, ZV-E10, ZV-1, FX30, A7 series, …).
-- **Native SwiftUI app.** Detects a camera card as soon as you insert it, shows what is on it, live progress, a notification when done, and an Eject button.
+- **See every file.** Thumbnails of all photos and videos on the card (RAW previews included), each with a status mark: ✓ in Immich, uploading, new, or skipped.
+- **Fast.** Works in batches of 20: uploads start within seconds instead of after reading the whole card. Checksums are cached, so re-checking a card you already scanned takes about a second.
+- **Native Swift app, no dependencies.** Detects a camera card as soon as you insert it, live progress, a notification when done, and an Eject button. Nothing else to install.
 - **Large videos that actually upload.** Immich drops uploads that take more than ~5 minutes. On a slow link (VPN, Tailscale relay, Wi-Fi), big files can go through an optional SSH relay near your server: copied with `rsync` (resumable) and uploaded from there.
 - **Safe settings.** Your Immich API key lives in the macOS Keychain, never in a file. Nothing is deleted from the card.
-- **Works from the command line too** (`sd2immich.py`), for scripts and automation.
 
 ## Download
 
@@ -27,7 +28,7 @@ Insert the card, click **Import to Immich**, done. The app uploads the RAW file 
 2. Move **SD to Immich.app** to your Applications folder.
 3. The app is open source but not notarized by Apple, so macOS blocks the first launch. Open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. (Or run `xattr -dr com.apple.quarantine "/Applications/SD to Immich.app"`.)
 
-Requirements: macOS 13 Ventura or newer (Apple Silicon or Intel), and Python 3. macOS ships Python 3 with the Command Line Tools (`xcode-select --install`); Homebrew or python.org Python also work.
+Requirements: macOS 13 Ventura or newer, Apple Silicon or Intel. No other software needed.
 
 ## Setup
 
@@ -44,9 +45,9 @@ Now insert a camera card. It appears in the sidebar. Click **Check what's new** 
 |---|---|
 | Find the card | Any mounted volume with a `DCIM` folder is treated as a camera card. |
 | Pick files | Group files by shot (`DSC01234.ARW` + `DSC01234.JPG`). Keep the RAW; keep the JPEG only if there is no RAW. Add videos. |
-| Deduplicate | Hash every file and ask Immich (`/assets/bulk-upload-check`) which ones it already has. |
-| Upload | Upload only the new files, with their capture date. |
-| Albums | Add every item (new or already uploaded) to its date album, creating the album if needed. |
+| Deduplicate | In batches of 20: SHA-1 each file (cached) and ask Immich (`/assets/bulk-upload-check`) which ones it already has. |
+| Upload | Upload only the new files of the batch, with their capture date. |
+| Albums | Add the batch (new or already uploaded) to its date albums, creating them if needed. A cancelled import keeps everything finished so far. |
 
 The RAW ledger (`~/Library/Application Support/sd2immich/raw-shots.json`) remembers which RAW shots were imported, so their JPEG twins are skipped on later imports even if the RAW was deleted from the card.
 
@@ -55,7 +56,7 @@ The RAW ledger (`~/Library/Application Support/sd2immich/raw-shots.json`) rememb
 | Setting | Default | Meaning |
 |---|---|---|
 | Server URL | | Your Immich address, without `/api` |
-| API key | | Stored in the login Keychain (service `sd2immich`) |
+| API key | | Stored in the login Keychain (service `sd-card-to-immich`) |
 | Import videos | on | Include video clips |
 | RAW only | off | Also skip JPEGs that have no RAW |
 | Album name format | `%Y-%m-%d` | strftime format of the capture date |
@@ -63,20 +64,6 @@ The RAW ledger (`~/Library/Application Support/sd2immich/raw-shots.json`) rememb
 | Relay threshold | 300 MB | Files above this go through the relay |
 
 Settings other than the key are stored in `~/.config/sd2immich/config.json` (readable only by you). See [`config.example.json`](config.example.json).
-
-## Command line
-
-The app's engine is a single Python 3 file with no dependencies:
-
-```sh
-# store the key once (reads stdin)
-pbpaste | python3 sd2immich.py --set-key
-
-python3 sd2immich.py --dry-run        # what would be imported from the mounted card
-python3 sd2immich.py                  # import
-python3 sd2immich.py --card /Volumes/Untitled --no-videos
-python3 sd2immich.py --check          # test server + key
-```
 
 ## FAQ
 
@@ -98,6 +85,9 @@ Any camera that writes a standard `DCIM` folder. Sony's separate video folder is
 **My SD card does not show up.**
 The app needs permission to read removable volumes: allow the macOS prompt, or turn it on in **System Settings → Privacy & Security → Files and Folders → SD to Immich → Removable Volumes**, then click Rescan. Each scan is logged to `~/Library/Logs/SD to Immich.log` (which volumes were seen and why a card was or wasn't picked up).
 
+**Why does macOS ask to let SD to Immich use the Keychain?**
+The API key is stored encrypted in your Keychain. Because the app isn't signed with an Apple developer ID, macOS asks once after you install or update it whether the new version may read the key. The app explains this before the prompt appears; click **Always Allow**.
+
 **Is this an official Immich app?**
 No. It is an independent project that uses Immich's public API.
 
@@ -106,7 +96,7 @@ No. It is an independent project that uses Immich's public API.
 ```sh
 git clone https://github.com/dig22/sd-card-to-immich.git
 cd sd-card-to-immich
-./build.sh 1.0.0      # needs Xcode or the Command Line Tools
+./build.sh 2.0.0      # needs Xcode or the Command Line Tools
 open "build/SD to Immich.app"
 ```
 

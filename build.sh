@@ -14,7 +14,6 @@ done
 lipo -create -output "$APP/Contents/MacOS/SDToImmich" build/obj/SDToImmich-arm64 build/obj/SDToImmich-x86_64
 
 sed "s/__VERSION__/$VERSION/g" App/Info.plist > "$APP/Contents/Info.plist"
-cp sd2immich.py "$APP/Contents/Resources/"
 
 # Icon: render once, then build the .icns from it.
 ICONSET=build/AppIcon.iconset && mkdir -p "$ICONSET"
